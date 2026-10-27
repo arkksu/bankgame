@@ -1,0 +1,441 @@
+{
+  "rounds": 6,
+  "starting_capital": 10,
+  "starting_liquidity": 15,
+  "auction_lots_extra": 1,
+  "free_deal_copies": 2,
+  "auction_deal_copies": 2,
+  "pro_deal_copies": 1,
+  "discount_cards": [0, -1, -2, -3, -4, -5],
+  "capital_exchange_rate": 2,
+  "risk_line_max": 25,
+
+  "funding": [
+    {
+      "id": "deposits",
+      "name": "Вклады населения",
+      "liquidity": 10,
+      "per_round": 1,
+      "term": null,
+      "repayable": "round_start",
+      "note": "Бессрочная. Возврат в ЦБ (10 очков) в начале любого раунда. Кризис требует 5 очков за карту."
+    },
+    {
+      "id": "mbk",
+      "name": "Рыночный займ (МБК)",
+      "liquidity": 10,
+      "per_round": "key_rate",
+      "term": 1,
+      "repayable": "round_end",
+      "note": "Короткая. В конце раунда вернуть 10 очков или заплатить ставку за продление."
+    },
+    {
+      "id": "bonds",
+      "name": "Облигации банка",
+      "liquidity": 10,
+      "per_round": 2,
+      "term": 3,
+      "repayable": "after_term",
+      "note": "Долгая (3 раунда), нельзя погасить досрочно. Цена зафиксирована."
+    },
+    {
+      "id": "penalty_credit",
+      "name": "Штрафной кредит ЦБ",
+      "liquidity": 10,
+      "per_round": 4,
+      "term": null,
+      "repayable": "anytime",
+      "forced": true,
+      "blocks_improvements": true,
+      "note": "Выдается принудительно при нехватке денег. Пока не погашен — нельзя покупать Улучшения."
+    }
+  ],
+
+  "deals": [
+    {
+      "id": "free_ofz",
+      "name": "Гособлигации (ОФЗ)",
+      "sector": "Сырье",
+      "kind": "A",
+      "auction": false,
+      "pro": null,
+      "body": 10,
+      "term": 2,
+      "income": 2,
+      "payoff": 0,
+      "risk": 0,
+      "default_on": [],
+      "default_penalty": 0,
+      "note": "Без дефолта."
+    },
+    {
+      "id": "free_auto",
+      "name": "Пул автокредитов",
+      "sector": "Ритейл",
+      "kind": "A",
+      "auction": false,
+      "pro": null,
+      "body": 10,
+      "term": 2,
+      "income": 3,
+      "payoff": 0,
+      "risk": 2,
+      "default_on": [1],
+      "default_penalty": 2,
+      "note": "Дефолт при 1: -2 Капитала."
+    },
+    {
+      "id": "1-01",
+      "name": "Сеть «ПродуктТорг» (Ритейл)",
+      "sector": "Ритейл",
+      "kind": "A",
+      "auction": true,
+      "pro": null,
+      "body": 10,
+      "term": 2,
+      "income": 3,
+      "payoff": 0,
+      "risk": 1,
+      "default_on": [],
+      "default_penalty": 0,
+      "note": "Без дефолта (кроме кризиса)."
+    },
+    {
+      "id": "1-02",
+      "name": "Агрохолдинг «Колос» (Агро)",
+      "sector": "Агро",
+      "kind": "A",
+      "auction": true,
+      "pro": null,
+      "body": 10,
+      "term": 2,
+      "income": 4,
+      "payoff": 0,
+      "risk": 2,
+      "default_on": [1],
+      "default_penalty": 4,
+      "note": "При 1: штраф -4 Капитала (тело возвращается)."
+    },
+    {
+      "id": "1-03",
+      "name": "Завод «ТяжМаш» (Пром)",
+      "sector": "Пром",
+      "kind": "A",
+      "auction": true,
+      "pro": null,
+      "body": 15,
+      "term": 3,
+      "income": 4,
+      "payoff": 0,
+      "risk": 2,
+      "default_on": [1],
+      "default_penalty": 5,
+      "note": "При 1: штраф -5 Капитала (тело возвращается)."
+    },
+    {
+      "id": "1-04",
+      "name": "Облигации «Энерго» (Сырье)",
+      "sector": "Сырье",
+      "kind": "A",
+      "auction": true,
+      "pro": null,
+      "body": 10,
+      "term": 2,
+      "income": 3,
+      "payoff": 0,
+      "risk": 1,
+      "default_on": [],
+      "default_penalty": 0,
+      "note": "Без дефолта."
+    },
+    {
+      "id": "1-05",
+      "name": "ЖК «Уютный Квартал» (Стройка)",
+      "sector": "Стройка",
+      "kind": "B",
+      "auction": true,
+      "pro": null,
+      "body": 10,
+      "term": 2,
+      "income": 0,
+      "payoff": 8,
+      "risk": 3,
+      "default_on": [1, 2],
+      "default_penalty": 4,
+      "note": "При 1–2: доход 0, штраф -4 Капитала."
+    },
+    {
+      "id": "1-06",
+      "name": "Грузовой Порт (Пром)",
+      "sector": "Пром",
+      "kind": "B",
+      "auction": true,
+      "pro": null,
+      "body": 15,
+      "term": 2,
+      "income": 0,
+      "payoff": 10,
+      "risk": 3,
+      "default_on": [1],
+      "default_penalty": 5,
+      "note": "При 1: доход 0, штраф -5 Капитала."
+    },
+    {
+      "id": "2-01",
+      "name": "Федеральная Ипотека (Стройка)",
+      "sector": "Стройка",
+      "kind": "A",
+      "auction": true,
+      "pro": "kredity",
+      "body": 20,
+      "term": 3,
+      "income": 5,
+      "payoff": 0,
+      "risk": 3,
+      "default_on": [1],
+      "default_penalty": 6,
+      "note": "При 1: штраф -6 Капитала."
+    },
+    {
+      "id": "2-02",
+      "name": "Сеть Гипермаркетов (Ритейл)",
+      "sector": "Ритейл",
+      "kind": "A",
+      "auction": true,
+      "pro": "kredity",
+      "body": 20,
+      "term": 2,
+      "income": 6,
+      "payoff": 0,
+      "risk": 2,
+      "default_on": [1],
+      "default_penalty": 5,
+      "note": "При 1: штраф -5 Капитала."
+    },
+    {
+      "id": "2-03",
+      "name": "Башня «МегаСити» (Стройка)",
+      "sector": "Стройка",
+      "kind": "B",
+      "auction": true,
+      "pro": "kredity",
+      "body": 25,
+      "term": 2,
+      "income": 0,
+      "payoff": 18,
+      "risk": 4,
+      "default_on": [1, 2],
+      "default_penalty": 8,
+      "note": "При 1–2: доход 0, штраф -8 Капитала."
+    },
+    {
+      "id": "2-04",
+      "name": "IPO Облачного Сервиса (IT)",
+      "sector": "IT",
+      "kind": "B",
+      "auction": true,
+      "pro": "invest",
+      "body": 15,
+      "term": 1,
+      "income": 0,
+      "payoff": 7,
+      "risk": 3,
+      "default_on": [1, 2],
+      "default_penalty": 3,
+      "note": "Быстрый куш: +7 сразу в конце хода."
+    },
+    {
+      "id": "2-05",
+      "name": "Поглощение Металлургов (Пром)",
+      "sector": "Пром",
+      "kind": "B",
+      "auction": true,
+      "pro": "invest",
+      "body": 20,
+      "term": 1,
+      "income": 0,
+      "payoff": 9,
+      "risk": 3,
+      "default_on": [1],
+      "default_penalty": 6,
+      "note": "Быстрый куш: +9 сразу в конце хода."
+    },
+    {
+      "id": "2-06",
+      "name": "Венчурный ИИ-Стартап (IT)",
+      "sector": "IT",
+      "kind": "B",
+      "auction": true,
+      "pro": "invest",
+      "body": 10,
+      "term": 2,
+      "income": 0,
+      "payoff": 16,
+      "risk": 5,
+      "default_on": [1, 2, 3],
+      "default_penalty": 8,
+      "note": "Пан или пропал: при 1–3 доход 0, штраф -8 Капитала."
+    }
+  ],
+
+  "improvements": [
+    {
+      "id": "ai_scoring",
+      "name": "ИИ-Скоринг",
+      "price": 4,
+      "risk_reduction": 1,
+      "min_risk": 1,
+      "note": "Каждая сделка дает на 1 Риск меньше (но не меньше 1)."
+    },
+    {
+      "id": "reserve_fund",
+      "name": "Резервный Фонд",
+      "price": 5,
+      "type": "once",
+      "note": "Одноразовая страховка: при дефолте отдайте карту вместо Капитала (доход сохраняется)."
+    },
+    {
+      "id": "mobile_app",
+      "name": "Мобильное Приложение",
+      "price": 5,
+      "income_per_round": 1,
+      "protects_deposits": true,
+      "note": "+1 очко в раунд и защита вкладов от паники."
+    },
+    {
+      "id": "compliance",
+      "name": "Отдел Комплаенса",
+      "price": 4,
+      "risk_overcap": 4,
+      "note": "Риск может превышать Капитал на +4 пункта."
+    }
+  ],
+
+  "bank_types": [
+    {
+      "id": "base",
+      "name": "Базовый Универсальный Банк",
+      "price": 0,
+      "min_round": 1,
+      "conveyor_limit": 3,
+      "monthly_cost": 2,
+      "pro": [],
+      "note": "Старт для всех. Лимит 3 сделки, без [PRO]."
+    },
+    {
+      "id": "commercial",
+      "name": "Коммерческий Банк",
+      "price": 6,
+      "min_round": 2,
+      "conveyor_limit": 5,
+      "monthly_cost": 2,
+      "pro": ["kredity"],
+      "deposit_cost": 0,
+      "forbidden_deals": ["invest"],
+      "weak": "Очень больно бьет кризис «Паника вкладчиков».",
+      "note": "Лимит 5, доступ [PRO: Кредиты], вклады бесплатны."
+    },
+    {
+      "id": "investment",
+      "name": "Инвестиционный Банк",
+      "price": 6,
+      "min_round": 2,
+      "conveyor_limit": 4,
+      "monthly_cost": 2,
+      "pro": ["invest"],
+      "forbidden_funding": ["deposits"],
+      "invest_body_discount": 3,
+      "invest_close_bonus": 2,
+      "weak": "Нельзя брать «Вклады населения».",
+      "note": "Лимит 4, доступ [PRO: Инвест], закрытие сделки [PRO] приносит +2 сверху."
+    },
+    {
+      "id": "ecosystem",
+      "name": "Финансовая Экосистема",
+      "price": 6,
+      "min_round": 2,
+      "conveyor_limit": 6,
+      "monthly_cost": 5,
+      "pro": ["kredity", "invest"],
+      "per_deal_income": 1,
+      "weak": "Огромный штат: расход 5 очков в раунд.",
+      "note": "Лимит 6 сделок, все Уровня 2 ([PRO]), +1 очко за сделку с доходом каждый раунд."
+    }
+  ],
+
+  "cb_decisions": [
+    {
+      "round": 1,
+      "title": "Дешевые деньги",
+      "text": "Ставка ЦБ: Низкая. МБК стоят 2 очка. Первая взятая карта «Вклады населения» в этом раунде обслуживается бесплатно (0 очков).",
+      "key_rate_name": "Низкая",
+      "mbk_rate": 2,
+      "free_first_deposit": true
+    },
+    {
+      "round": 2,
+      "title": "Субсидии реальному сектору",
+      "text": "Ставка ЦБ: Низкая. Все сделки секторов Пром, Агро и IT на столах команд приносят в этом раунде +2 бонусных очка из кассы ЦБ.",
+      "key_rate_name": "Низкая",
+      "mbk_rate": 2,
+      "subsidy_sectors": ["Пром", "Агро", "IT"],
+      "subsidy_amount": 2
+    },
+    {
+      "round": 3,
+      "title": "Борьба с инфляцией",
+      "text": "Ставка ЦБ повышена до Высокой! Плата за каждую карту МБК вырастает до 3 очков в раунд. Зато «Гособлигации (ОФЗ)» приносят +3 очка вместо 2.",
+      "key_rate_name": "Высокая",
+      "mbk_rate": 3,
+      "ofz_bonus": 3
+    },
+    {
+      "round": 4,
+      "title": "Надзорная ревизия ЦБ",
+      "text": "Ставка ЦБ: Средняя. МБК снова стоят 2 очка. У кого запас между Капиталом и Риском меньше 2 единиц — тот немедленно платит в ЦБ 3 очка предписания.",
+      "key_rate_name": "Средняя",
+      "mbk_rate": 2,
+      "revision_min_gap": 2,
+      "revision_penalty": 3
+    },
+    {
+      "round": 5,
+      "title": "Подготовка к стресс-тесту",
+      "text": "Ставка ЦБ: Средняя. В конце этого раунда будут вскрыты 2 из 3 стресс-сценариев для 6-го раунда.",
+      "key_rate_name": "Средняя",
+      "mbk_rate": 2
+    },
+    {
+      "round": 6,
+      "title": "Финальный раунд",
+      "text": "Ставка ЦБ: Средняя. Действует открытый стресс-сценарий.",
+      "key_rate_name": "Средняя",
+      "mbk_rate": 2
+    }
+  ],
+
+  "stress_scenarios": [
+    {
+      "id": "S1",
+      "name": "Крах застройщиков",
+      "text": "В 6-м раунде все сделки сектора Стройка проверяются кубиком вне очереди: дефолт при 1, 2 или 3. Если у банка 2 или больше карт Стройки — ЦБ сразу списывает -4 карточки Капитала за опасную концентрацию.",
+      "construction_fail": 3,
+      "concentration_cards": 2,
+      "concentration_penalty": 4
+    },
+    {
+      "id": "S2",
+      "name": "Набег вкладчиков на банкоматы",
+      "text": "В начале 6-го раунда за каждую карту «Вклады населения» команда немедленно сдаёт в ЦБ 5 очков Ликвидности (если нет карты «Мобильное Приложение»).",
+      "deposit_penalty": 5,
+      "waived_by": "mobile_app"
+    },
+    {
+      "id": "S3",
+      "name": "Кризис ликвидности и обвал биржи",
+      "text": "В 6-м раунде ЦБ поднимает ставку по МБК до 4 очков, а все сделки Уровня 2 [PRO: Инвест] приносят на 4 очка меньше дохода.",
+      "mbk_rate": 4,
+      "invest_income_penalty": 4
+    }
+  ]
+}

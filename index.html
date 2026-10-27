@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Банковская игра</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="start" class="overlay">
+    <div class="panel start-panel">
+      <h1>БАНКОВСКАЯ ИГРА</h1>
+      <p class="subtitle">Один общий экран за столом: команды по очереди подходят к ноутбуку.</p>
+
+      <div class="setup-row">
+        <label for="team-count">Команд за столом</label>
+        <input type="range" id="team-count" min="2" max="6" step="1" value="2">
+        <span id="team-count-label" class="setup-count">2</span>
+      </div>
+
+      <button id="btn-new" class="big-btn">Новая игра</button>
+      <button id="btn-continue" class="big-btn secondary hidden">Продолжить сохранённую</button>
+
+      <div class="howto">
+        <b>Как играть:</b> за 6 раундов команда берёт долги, покупает сделки на торгах
+        и у ЦБ, платит проценты и проверяет сделки кубиком. В конце побеждает тот,
+        у кого больше очков (Капитал × 2 + Ликвидность ÷ 2 + улучшения × 4).
+      </div>
+
+      <div id="history" class="history"></div>
+    </div>
+  </div>
+
+  <div id="end" class="overlay hidden">
+    <div class="panel start-panel">
+      <h1 id="end-title">Готово</h1>
+      <p id="end-text" class="subtitle"></p>
+      <button class="big-btn" onclick="location.reload()">Перезагрузить страницу</button>
+    </div>
+  </div>
+
+  <header id="topbar" class="hidden">
+    <div id="tb-round"></div>
+    <div id="tb-cb"></div>
+    <div id="tb-step"></div>
+    <nav id="nav">
+      <button id="nav-game-btn" class="nav-btn active" type="button">Игра</button>
+      <button id="nav-teams-btn" class="nav-btn" type="button">Команды</button>
+      <button id="nav-market-btn" class="nav-btn" type="button">Рынок</button>
+      <button id="nav-deck-btn" class="nav-btn" type="button">Колода</button>
+      <button id="logs-btn" class="nav-btn" type="button">События</button>
+      <button id="cb-btn" class="nav-btn" type="button">Решение ЦБ</button>
+      <button id="help-btn" class="nav-btn" type="button">Справка</button>
+    </nav>
+  </header>
+
+  <div id="tab-game" class="tab-pane hidden">
+    <main id="main">
+      <section id="ctx"></section>
+      <div id="turn-banner" class="hidden"></div>
+      <section id="control"></section>
+      <div id="waiting" class="hidden">Отправили — ждём ход движка…</div>
+    </main>
+  </div>
+
+  <div id="tab-teams" class="tab-pane hidden side-panel"></div>
+  <div id="tab-market" class="tab-pane hidden side-panel"></div>
+  <div id="tab-deck" class="tab-pane hidden side-panel"></div>
+  <div id="tab-logs" class="tab-pane hidden side-panel"></div>
+  <div id="tab-cb" class="tab-pane hidden side-panel"></div>
+  <div id="tab-help" class="tab-pane hidden side-panel"></div>
+
+  <script src="cards-data.js"></script>
+  <script src="engine.js"></script>
+  <script src="ui.js"></script>
+  <script src="storage.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
