@@ -22,9 +22,9 @@
       <button id="btn-continue" class="big-btn secondary hidden">Продолжить сохранённую</button>
 
       <div class="howto">
-        <b>Как играть:</b> за 6 раундов команда берёт долги, покупает сделки на торгах
+        <b>Как играть:</b> за <span id="howto-rounds">6</span> раундов команда берёт долги, покупает сделки на торгах
         и у ЦБ, платит проценты и проверяет сделки кубиком. В конце побеждает тот,
-        у кого больше очков (Капитал × 2 + Ликвидность ÷ 2 + улучшения × 4).
+        у кого больше очков (Капитал × 2 + Баланс ÷ 2 + улучшения × 4).
       </div>
 
       <div id="history" class="history"></div>
@@ -70,6 +70,7 @@
   <div id="tab-cb" class="tab-pane hidden side-panel"></div>
   <div id="tab-help" class="tab-pane hidden side-panel"></div>
 
+  <script src="config.js"></script>
   <script src="cards-data.js"></script>
   <script src="engine.js"></script>
   <script src="ui.js"></script>

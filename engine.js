@@ -104,7 +104,11 @@ class CardDB {
     if (typeof CARDS === "undefined") {
       throw new Error("нет данных карточек (cards-data.js не подключён)");
     }
-    return new CardDB(CARDS);
+    if (typeof START_CONFIG === "undefined") {
+      throw new Error("нет конфигурации партии (config.js не подключён)");
+    }
+    // стартовые значения берём из config.js, карточки — из cards-data.js
+    return new CardDB({ ...CARDS, ...START_CONFIG });
   }
 
   _validate() {
@@ -128,7 +132,11 @@ class CardDB {
       if (!(fid in this.funding)) errors.push(`нет пассива ${fid}`);
     }
     if (!("base" in this.bank_types)) errors.push("нет базового типа банка");
-    if (this.discount_cards.length !== 6) errors.push("карточек скидки должно быть 6");
+    if (!Array.isArray(this.discount_cards)) {
+      errors.push("discount_cards должен быть массивом");
+    } else if (this.discount_cards.some((v) => typeof v !== "number" || !isFinite(v))) {
+      errors.push("в discount_cards должны быть только числа");
+    }
     if (errors.length) {
       throw new Error("Ошибки в данных карточек:\n" + errors.join("\n"));
     }
@@ -162,7 +170,7 @@ function dealFromDict(x) {
     uid: x.uid,
     card_id: x.card_id,
     column: x.column,
-    discount: x.discount ?? 0,
+    discount: x.discount ?? null,
     discount_used: !!x.discount_used,
   };
 }
@@ -179,7 +187,7 @@ function fundingFromDict(x) {
 class Team {
   constructor({
     name, capital, liquidity, bank_type = "base",
-    deals = [], funding = [], improvements = [], bid_hand = [],
+    deals = [], funding = [], improvements = [], bid_hand = [], bid_used = [],
     reserve_used = false,
   }) {
     this.name = name;
@@ -190,6 +198,7 @@ class Team {
     this.funding = funding;        // [{uid, card_id, rounds_left, free_round}]
     this.improvements = improvements;
     this.bid_hand = bid_hand;      // свободные карточки скидки
+    this.bid_used = bid_used;      // сгоревшие в этом раунде — вернутся в следующем
     this.reserve_used = reserve_used;
   }
 
@@ -223,6 +232,7 @@ class Team {
       funding: this.funding.map((f) => ({ ...f })),
       improvements: [...this.improvements],
       bid_hand: [...this.bid_hand],
+      bid_used: [...this.bid_used],
       reserve_used: this.reserve_used,
     };
   }
@@ -237,6 +247,7 @@ class Team {
       funding: (d.funding || []).map(fundingFromDict),
       improvements: [...(d.improvements || [])],
       bid_hand: [...(d.bid_hand || [])],
+      bid_used: [...(d.bid_used || [])],
       reserve_used: !!d.reserve_used,
     });
   }
@@ -716,7 +727,7 @@ class Game {
     if (action === "spec") {
       const b = db.bank_types[payload];
       const details = [
-        `цена: ${b.price} очков ликвидности`,
+        `цена: ${b.price} очков баланса`,
         b.note || "",
         `слабое место: ${b.weak || "—"}`,
         "меняется один раз за игру",
@@ -728,7 +739,7 @@ class Game {
       ui.log(`${team.name}: специализация «${b.name}» (−${b.price}).`, s);
     } else if (action === "imp") {
       const imp = db.improvements[payload];
-      const details = [`цена: ${imp.price} очков ликвидности`, imp.note || ""];
+      const details = [`цена: ${imp.price} очков баланса`, imp.note || ""];
       if (!(await this.confirmOrCancel(`Купить «${imp.name}»?`, details))) return;
       if (!this.hasLiquidity(team, imp.price)) return;
       team.liquidity -= imp.price;
@@ -810,13 +821,17 @@ class Game {
       }
       if (await ui.askYesNo(`${team.name}: участвует в торгах за «${card.name}»?`, false)) {
         const opts = [...team.bid_hand].sort((a, b) => a - b).map((v) => ({
-          label: `карточка скидки ${v} → получите +${net + v} вместо +${net}`,
+          label: `карточка скидки ${v} → получите +${net + v}`,
           value: v,
         }));
         const idx = await ui.askChoice(`${team.name}: какую карточку скидку поставить?`, opts);
         const bid = opts[idx].value;
         const hi = team.bid_hand.indexOf(bid);
-        if (hi >= 0) team.bid_hand.splice(hi, 1);
+        if (hi >= 0) {
+          team.bid_hand.splice(hi, 1);
+          // карточка сгорает до конца раунда и вернётся в phaseRoundEnd
+          team.bid_used.push(bid);
+        }
         bids.push({ team, bid, reason: null });
       } else {
         bids.push({ team, bid: null, reason: null });
@@ -865,12 +880,9 @@ class Game {
       winBid = pair[1];
     }
 
-    for (const b of bids) {
-      if (b.bid !== null && b.team !== winner) b.team.bid_hand.push(b.bid);
-    }
-
     this.takeDeal(winner, cid, winBid);
     ui.log(`${winner.name} побеждает в торгах за «${card.name}» со скидкой ${winBid}!`, s);
+    ui.note("Использованные карточки скидки вернутся в руку в следующем раунде.");
     s.market_lots.shift();
     await ui.pause();
   }
@@ -884,7 +896,7 @@ class Game {
     }
     const price = this.dealPrice(team, card);
     if (team.liquidity < price) {
-      return `не хватает Ликвидности (нужно ${price}, есть ${team.liquidity})`;
+      return `не хватает Баланса (нужно ${price}, есть ${team.liquidity})`;
     }
     if (!canAddRisk(team, card.risk, db)) {
       return `норматив ЦБ: Риск ${totalRisk(team, db)} + ${card.risk} > предел ${riskLimit(team, db)}`;
@@ -900,7 +912,7 @@ class Game {
   }
 
   takeDeal(team, cid, bid) {
-    /** Карточка скидки уже списана с руки в момент тайной ставки. */
+    /** Карточка скидки уже сгорела на торгах (bid_used) до конца раунда. */
     const s = this.state, db = this.db, ui = this.ui;
     const card = db.deals[cid];
     const price = this.dealPrice(team, card);
@@ -1013,8 +1025,8 @@ class Game {
       uid: s.allocUid(),
       card_id: cid,
       column: Math.min(3, Math.max(1, card.term)),
-      discount: 0,
-      discount_used: false,
+      discount: null,
+      discount_used: true,
     };
     team.liquidity -= price;
     team.deals.push(inst);
@@ -1141,10 +1153,9 @@ class Game {
   }
 
   applyDiscount(team, deal) {
-    /** Снимает карточку скидки со сделки и возвращает её в руку команды. */
+    /** Отмечает скидку использованной. Сама карточка уже сгорела на торгах. */
     const fresh = { ...deal, discount_used: true };
     team.deals = team.deals.map((x) => (x.uid === deal.uid ? fresh : x));
-    if (!team.bid_hand.includes(deal.discount)) team.bid_hand.push(deal.discount);
     return fresh;
   }
 
@@ -1182,23 +1193,22 @@ class Game {
     const rate = db.capital_exchange_rate;
     const maxPairs = Math.floor(team.liquidity / rate);
     if (maxPairs <= 0) return;
-    this.drawTeamTurn(team, `${this.stepLabel(4)} — Обмен прибыли на Капитал (${team.name})`);
-    ui.note(`Ликвидность: ${team.liquidity} | Капитал: ${team.capital} | `
-      + `${rate} ликвидности → 1 капитал, доступно пар: ${maxPairs}`);
+    this.drawTeamTurn(team, `${this.stepLabel(4)} — Обмен прибыли на капитал (${team.name})`);
+    ui.note(`${rate} баланса → 1 капитал, доступно пар: ${maxPairs}`);
     const act = await this.pick("Обмен прибыли на Капитал", [
       ["Обменять прибыль на Капитал", "yes"],
     ]);
     if (act !== "yes") return;
-    const pairs = await ui.askInt(`Сколько обменять (${rate} ликвидности → 1 капитал)`, 1, maxPairs);
+    const pairs = await ui.askInt(`Сколько обменять (${rate} баланса → 1 капитал)`, 1, maxPairs);
     const cost = Math.min(pairs * rate, Math.floor(team.liquidity / rate) * rate);
     const pairsGot = cost / rate;
-    if (!(await this.confirmOrCancel(`Обменять ${cost} Ликвидности на ${pairsGot} Капитала?`, [
-      `курс: ${rate} ликвидности → 1 капитал`,
-      `после обмена: ликвидность ${team.liquidity - cost}, капитал ${team.capital + pairsGot}`,
+    if (!(await this.confirmOrCancel(`Обменять ${cost} Баланса на ${pairsGot} Капитала?`, [
+      `курс: ${rate} баланса → 1 капитал`,
+      `после обмена: баланс ${team.liquidity - cost}, капитал ${team.capital + pairsGot}`,
     ]))) return;
     team.liquidity -= cost;
     team.capital += pairsGot;
-    ui.log(`${team.name}: обменял ${cost} Ликвидности на ${pairsGot} Капитала.`, s);
+    ui.log(`${team.name}: обменял ${cost} Баланса на ${pairsGot} Капитала.`, s);
   }
 
   // ====== деньги ======
@@ -1228,7 +1238,7 @@ class Game {
     const short = amount - team.liquidity;
     team.liquidity = 0;
     deductCapital(team, short);
-    ui.log(`${team.name}: ликвидности нет — ${short} списано из Капитала 1:1.`, s);
+    ui.log(`${team.name}: баланса нет — ${short} списано из Капитала 1:1.`, s);
   }
 
   penaltyFunding(team) {
@@ -1308,7 +1318,7 @@ class Game {
       if (card.pro === "invest" && s.round_number === 6 && s.active_stress.includes("S3")) {
         const penalty = db.stress_scenarios.S3.invest_income_penalty;
         income = Math.max(0, income - penalty);
-        ui.log(`${team.name}: стресс «Кризис ликвидности» — куш по `
+        ui.log(`${team.name}: стресс «Кризис баланса» — куш по `
           + `«${card.name}» уменьшен на ${penalty}.`, s);
       }
     }
@@ -1320,7 +1330,6 @@ class Game {
       ui.log(`${team.name}: «${card.name}» — тело ${paid} возвращено.`, s);
     }
 
-    if (!team.bid_hand.includes(deal.discount)) team.bid_hand.push(deal.discount);
     team.deals = team.deals.filter((d) => d.uid !== deal.uid);
     s.discard.push(card.id);
   }
@@ -1380,7 +1389,7 @@ class Game {
 
       const buyOpts = s.teams
         .filter((t) => t.name !== seller.name)
-        .map((t) => [`${t.name} (ликвидность: ${t.liquidity})`, t.name]);
+        .map((t) => [`${t.name} (баланс: ${t.liquidity})`, t.name]);
       const buyName = await this.pick(`Кто покупает у «${seller.name}»?`, buyOpts);
       if (buyName === null) return false;
       buyer = s.teams.find((t) => t.name === buyName);
@@ -1396,7 +1405,7 @@ class Game {
     const uid = await this.pick("Какую сделку продать", options);
     if (uid === null) return false;
     const deal = seller.dealByUid(uid);
-    let price = await ui.askInt("Цена в очках ликвидности", 0, buyer.liquidity);
+    let price = await ui.askInt("Цена в очках баланса", 0, buyer.liquidity);
     price = Math.min(price, buyer.liquidity);
     seller.liquidity += price;
     buyer.liquidity -= price;
@@ -1413,6 +1422,13 @@ class Game {
   phaseRoundEnd() {
     const s = this.state, db = this.db, ui = this.ui;
     if (this.onRoundEnd) this.onRoundEnd(s);
+    // сгоревшие на торгах карточки возвращаются в руку в новом раунде
+    for (const t of s.teams) {
+      if (t.bid_used && t.bid_used.length) {
+        t.bid_hand.push(...t.bid_used);
+        t.bid_used = [];
+      }
+    }
     s.round_number += 1;
     if (s.round_number > db.rounds) {
       s.phase = "finished";
@@ -1448,7 +1464,6 @@ class Game {
         }
         const paid = card.body + bonus;
         t.liquidity += paid;
-        if (!t.bid_hand.includes(d.discount)) t.bid_hand.push(d.discount);
         ui.log(`${t.name}: «${card.name}» закрыта досрочно, тело ${paid} возвращено.`, s);
       }
       t.deals = [];

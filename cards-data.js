@@ -1,26 +1,10 @@
 /* Данные карточек для автономной (без Python) версии игры.
  * Это копия cards.json — при изменении cards.json обновите файл скриптом:
  *   python3 tools/gen_cards_js.py
+ * Стартовые значения партии лежат отдельно — в config.js (START_CONFIG).
  */
 "use strict";
 const CARDS = {
-  "rounds": 6,
-  "starting_capital": 10,
-  "starting_liquidity": 15,
-  "auction_lots_extra": 1,
-  "free_deal_copies": 2,
-  "auction_deal_copies": 2,
-  "pro_deal_copies": 1,
-  "discount_cards": [
-    0,
-    -1,
-    -2,
-    -3,
-    -4,
-    -5
-  ],
-  "capital_exchange_rate": 2,
-  "risk_line_max": 25,
   "funding": [
     {
       "id": "deposits",
@@ -474,13 +458,13 @@ const CARDS = {
     {
       "id": "S2",
       "name": "Набег вкладчиков на банкоматы",
-      "text": "В начале 6-го раунда за каждую карту «Вклады населения» команда немедленно сдаёт в ЦБ 5 очков Ликвидности (если нет карты «Мобильное Приложение»).",
+      "text": "В начале 6-го раунда за каждую карту «Вклады населения» команда немедленно сдаёт в ЦБ 5 очков Баланса (если нет карты «Мобильное Приложение»).",
       "deposit_penalty": 5,
       "waived_by": "mobile_app"
     },
     {
       "id": "S3",
-      "name": "Кризис ликвидности и обвал биржи",
+      "name": "Кризис баланса и обвал биржи",
       "text": "В 6-м раунде ЦБ поднимает ставку по МБК до 4 очков, а все сделки Уровня 2 [PRO: Инвест] приносят на 4 очка меньше дохода.",
       "mbk_rate": 4,
       "invest_income_penalty": 4

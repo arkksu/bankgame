@@ -203,8 +203,6 @@ for (const sel of NAV_BTN_SELECTORS) {
 document.addEventListener("click", (e) => {
   // Не закрываем при клике на навигационные кнопки
   if (e.target.closest(".nav-btn")) return;
-  // Не закрываем панель CB при клике на tb-cb
-  if (e.target.closest("#tb-cb")) return;
   
   // Закрываем все side-panel если клик был вне них
   const sidePanels = document.querySelectorAll(".side-panel:not(.hidden)");
@@ -216,7 +214,7 @@ document.addEventListener("click", (e) => {
   
   // Закрываем CB panel если клик был вне него
   const cbPanel = document.querySelector("#tab-cb:not(.hidden)");
-  if (cbPanel && !cbPanel.contains(e.target) && !e.target.closest("#tb-cb")) {
+  if (cbPanel && !cbPanel.contains(e.target)) {
     cbPanel.classList.add("hidden");
   }
 });
@@ -250,8 +248,10 @@ function renderTeamsPanel() {
     ? currentScreen.ctx.table.name : null;
   for (const t of gameState.teams) {
     box.append(renderTable(null, teamTableView(t, gameState, db), t.name === turnName));
+    const used = (t.bid_used || []).length;
     box.append(el("div", { class: "hand-line",
-      text: `Карточек скидки у «${t.name}»: ${t.bid_hand.length}` }));
+      text: `Карточек скидки у «${t.name}»: ${t.bid_hand.length}`
+        + (used ? ` (${used} сгорело, вернутся в след. раунде)` : "") }));
   }
 }
 
@@ -331,8 +331,8 @@ function renderHelpPanel() {
     el("b", { text: "Норматив" }),
     el("span", { text: " — Риск сделок не должен превышать Капитала." })));
   box2.append(el("div", { class: "help-step" },
-    el("b", { text: "Очки вFinale" }),
-    el("span", { text: " — Капитал × 2 + Ликвидность ÷ 2 + (улучшения и "
+    el("b", { text: "Очки в финале" }),
+    el("span", { text: " — Капитал × 2 + Баланс ÷ 2 + (улучшения и "
       + "специализация) × 4." })));
   box2.append(el("div", { class: "help-step" },
     el("b", { text: "Управление" }),
@@ -352,8 +352,10 @@ function renderTeamsPanel() {
     ? currentScreen.ctx.table.name : null;
   for (const t of gameState.teams) {
     box.append(renderTable(null, teamTableView(t, gameState, db), t.name === turnName));
+    const used = (t.bid_used || []).length;
     box.append(el("div", { class: "hand-line",
-      text: `Карточек скидки у «${t.name}»: ${t.bid_hand.length}` }));
+      text: `Карточек скидки у «${t.name}»: ${t.bid_hand.length}`
+        + (used ? ` (${used} сгорело, вернутся в след. раунде)` : "") }));
   }
 }
 
@@ -460,7 +462,7 @@ function renderHelpPanel() {
     el("span", { text: " — Риск сделок не должен превышать Капитал команды." })));
   box2.append(el("div", { class: "help-step" },
     el("b", { text: "Очки в финале" }),
-    el("span", { text: " — Капитал × 2 + Ликвидность ÷ 2 + (улучшения и "
+    el("span", { text: " — Капитал × 2 + Баланс ÷ 2 + (улучшения и "
       + "специализация) × 4." })));
   box2.append(el("div", { class: "help-step" },
     el("b", { text: "Управление" }),
@@ -493,7 +495,7 @@ function renderHistory() {
       el("span", { class: "hist-when", text: String(rec.finished_at || "") }),
       el("span", { class: "hist-winner", text: `Победил ${rec.winner}` }),
       winner ? el("span", { class: "muted",
-        text: ` — ${winner.points} очк. (кап. ${winner.capital}, ликв. ${winner.liquidity})` }) : null,
+        text: ` — ${winner.points} очк. (кап. ${winner.capital}, баланс ${winner.liquidity})` }) : null,
     ));
   }
 }
@@ -627,21 +629,21 @@ function renderMarket(box, market) {
 function renderTable(box, t, turn = true) {
   const panel = el("div", { class: "table-panel" });
   panel.append(el("div", { class: "tp-name",
-    text: (turn ? ">>> ХОД: " : "") + t.name }));
+    text: (turn ? ">>> " : "") + t.name }));
   panel.append(el("div", { class: "tp-money" },
     el("span", { class: "tp-capital", text: `Капитал: ${t.capital}` }),
-    el("span", { class: "tp-liq", text: `Ликвидность: ${t.liquidity}` }),
+    el("span", { class: "tp-liq", text: `Баланс: ${t.liquidity}` }),
   ));
   const riskCls = t.risk_ok ? "tp-risk ok" : "tp-risk bad";
   panel.append(el("div", { class: riskCls,
-    text: `Риск: ${t.risk} (норматив: не больше Капитала ${t.capital})` }));
+    text: `Риск: ${t.risk}` }));
   if (!t.risk_ok) {
     panel.append(el("div", { class: "tp-warn", text: "!! Нужно уменьшить Риск или увеличить Капитал." }));
   }
   panel.append(el("div", { class: "tp-bank",
     text: `Банк: ${t.bank} (не больше ${t.deals_limit} сделок, расход ${t.monthly_cost}/р.)` }));
 
-  const debts = el("div", { class: "tp-sec" }, el("h4", { text: "Долги (платежи каждый раунд)" }));
+  const debts = el("div", { class: "tp-sec" }, el("h4", { text: "Долги" }));
   if (!t.funding.length) debts.append(el("div", { class: "muted", text: "— нет" }));
   for (const f of t.funding) {
     debts.append(el("div", { class: "tp-item",
@@ -682,7 +684,7 @@ function renderStatus(box, rows) {
     wrap.append(el("div", { class: `status-card${r.risk_ok ? "" : " bad"}`,
       onclick: () => togglePanel("#teams-panel") },
       el("div", { class: "sc-name", text: r.name }),
-      el("div", { class: "sc-line", text: `Капитал ${r.capital} | Ликвидность ${r.liquidity}` }),
+      el("div", { class: "sc-line", text: `Капитал ${r.capital} | Баланс ${r.liquidity}` }),
       el("div", { class: "sc-line", text: `Риск ${r.risk}${r.risk_ok ? "" : " — больше капитала!"}` }),
       el("div", { class: "sc-line muted", text: `Сделок ${r.deals}, долгов ${r.funding}` }),
       el("div", { class: "sc-open", text: "открыть стол команды ⌄" }),
@@ -783,7 +785,7 @@ function renderControl(screen) {
     const tbl = el("table", { class: "final-table" },
       el("thead", {}, el("tr", {},
         el("th", { text: "Место" }), el("th", { text: "Команда" }),
-        el("th", { text: "Капитал" }), el("th", { text: "Ликвид." }),
+        el("th", { text: "Капитал" }), el("th", { text: "Баланс" }),
         el("th", { text: "Очки" }), el("th", { text: "Улучш." }),
         el("th", { text: "Банк" }))));
     const tbody = el("tbody", {});
@@ -814,6 +816,8 @@ $("#team-count").addEventListener("input", (e) => {
 
 function init() {
   db = CardDB.load();
+  const howtoRounds = $("#howto-rounds");
+  if (howtoRounds) howtoRounds.textContent = String(db.rounds);
   ui = new WebUI();
   ui.onScreen = renderScreen;
   turnBanner = $("#turn-banner");

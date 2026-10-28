@@ -155,7 +155,7 @@ html, body {
 
 .choice-btn {
   padding: 16px 20px;
-  font-size: 20px;
+  font-size: 16px;
   text-align: left;
   border: 2px solid var(--panel2);
   border-radius: 12px;
@@ -285,7 +285,7 @@ input[type="text"] { width: 340px; }
 
 /* ---------- контент ---------- */
 
-#main { padding: 18px 22px 90px; max-width: 1200px; margin: 0 auto; }
+#main { padding: 18px 22px 20px; max-width: 1000px; margin: 0 auto; }
 
 .notes { margin-bottom: 10px; }
 .note {
