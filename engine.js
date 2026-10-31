@@ -188,7 +188,7 @@ class Team {
   constructor({
     name, capital, liquidity, bank_type = "base",
     deals = [], funding = [], improvements = [], bid_hand = [], bid_used = [],
-    reserve_used = false,
+    reserve_used = false, capital_exchanged_this_round = 0,
   }) {
     this.name = name;
     this.capital = capital;
@@ -200,6 +200,7 @@ class Team {
     this.bid_hand = bid_hand;      // свободные карточки скидки
     this.bid_used = bid_used;      // сгоревшие в этом раунде — вернутся в следующем
     this.reserve_used = reserve_used;
+    this.capital_exchanged_this_round = capital_exchanged_this_round; // пар обмена за раунд
   }
 
   dealByUid(uid) {
@@ -234,6 +235,7 @@ class Team {
       bid_hand: [...this.bid_hand],
       bid_used: [...this.bid_used],
       reserve_used: this.reserve_used,
+      capital_exchanged_this_round: this.capital_exchanged_this_round,
     };
   }
 
@@ -249,6 +251,7 @@ class Team {
       bid_hand: [...(d.bid_hand || [])],
       bid_used: [...(d.bid_used || [])],
       reserve_used: !!d.reserve_used,
+      capital_exchanged_this_round: d.capital_exchanged_this_round ?? 0,
     });
   }
 }
@@ -630,8 +633,13 @@ class Game {
   }
 
   async phaseFunding() {
-    const s = this.state, ui = this.ui;
+    const s = this.state, db = this.db, ui = this.ui;
     if (s.turn_team >= s.teams.length) {
+      ui.clear();
+      ui.header(s, db, `${this.stepLabel(2)} — Долги и покупки в ЦБ`);
+      ui.showStatus(s, db);
+      ui.note("Все команды завершили ход в ЦБ.");
+      await ui.pause("Далее");
       s.phase = "auction_lots";
       s.turn_team = 0;
       return;
@@ -1192,22 +1200,32 @@ class Game {
     const s = this.state, db = this.db, ui = this.ui;
     const rate = db.capital_exchange_rate;
     const maxPairs = Math.floor(team.liquidity / rate);
-    if (maxPairs <= 0) return;
+    const limit = db.capital_exchange_max_per_round;
+    const already = team.capital_exchanged_this_round || 0;
+    const remaining = limit == null
+      ? maxPairs
+      : Math.min(maxPairs, Math.max(0, limit - already));
+    if (remaining <= 0) {
+      ui.note(`Лимит обмена прибыли на капитал в этом раунде исчерпан (${already} из ${limit} пар).`);
+      return;
+    }
     this.drawTeamTurn(team, `${this.stepLabel(4)} — Обмен прибыли на капитал (${team.name})`);
-    ui.note(`${rate} баланса → 1 капитал, доступно пар: ${maxPairs}`);
+    ui.note(`${rate} баланса → 1 капитал, доступно пар: ${remaining}`);
     const act = await this.pick("Обмен прибыли на Капитал", [
       ["Обменять прибыль на Капитал", "yes"],
-    ]);
+    ], "Завершить ход — дальше");
+    if (act === null) return;
     if (act !== "yes") return;
-    const pairs = await ui.askInt(`Сколько обменять (${rate} баланса → 1 капитал)`, 1, maxPairs);
-    const cost = Math.min(pairs * rate, Math.floor(team.liquidity / rate) * rate);
-    const pairsGot = cost / rate;
+    const pairs = await ui.askInt(`Сколько обменять (${rate} баланса → 1 капитал)`, 1, remaining);
+    const cost = pairs * rate;
+    const pairsGot = pairs;
     if (!(await this.confirmOrCancel(`Обменять ${cost} Баланса на ${pairsGot} Капитала?`, [
       `курс: ${rate} баланса → 1 капитал`,
       `после обмена: баланс ${team.liquidity - cost}, капитал ${team.capital + pairsGot}`,
     ]))) return;
     team.liquidity -= cost;
     team.capital += pairsGot;
+    team.capital_exchanged_this_round = already + pairsGot;
     ui.log(`${team.name}: обменял ${cost} Баланса на ${pairsGot} Капитала.`, s);
   }
 
@@ -1422,6 +1440,8 @@ class Game {
   phaseRoundEnd() {
     const s = this.state, db = this.db, ui = this.ui;
     if (this.onRoundEnd) this.onRoundEnd(s);
+    // сбрасываем лимит обмена прибыли на капитал на новый раунд
+    for (const t of s.teams) t.capital_exchanged_this_round = 0;
     // сгоревшие на торгах карточки возвращаются в руку в новом раунде
     for (const t of s.teams) {
       if (t.bid_used && t.bid_used.length) {

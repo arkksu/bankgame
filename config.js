@@ -32,4 +32,9 @@ const START_CONFIG = {
   free_deal_copies: 2,
   auction_deal_copies: 2,
   pro_deal_copies: 1,
+
+  // Лимит обмена прибыли на капитал за один раунд на команду
+  // (в парах обмена, т.к. курс capital_exchange_rate баланса → 1 капитал).
+  // null — без ограничения.
+  capital_exchange_max_per_round: null,
 };
