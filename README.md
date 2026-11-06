@@ -49,15 +49,15 @@
 
 ```js
 rounds: 6,                 // длительность партии
-starting_capital: 10,      // стартовый Капитал команды
+starting_capital: 3,       // стартовый Капитал команды
 starting_liquidity: 15,    // стартовый Баланс команды
-discount_cards: [0, -1, -2, -3, -4, -5],
-capital_exchange_rate: 2,  // 2 Баланса → 1 Капитал
-risk_line_max: 25,         // норматив Риска
+discount_cards: [0, -1, -2, -3],
+capital_exchange_rate: 3,  // 3 Баланса → 1 Капитал
 auction_lots_extra: 1,     // лоты на торгах сверх числа команд
 free_deal_copies: 2,
 auction_deal_copies: 2,
 pro_deal_copies: 1,
+capital_exchange_max_per_round: 3, // лимит обмена за раунд (пар обмена)
 ```
 
 В интерфейсе величина `starting_liquidity` называется **«Баланс»**, чтобы её

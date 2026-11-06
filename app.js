@@ -32,7 +32,6 @@ function el(tag, attrs = {}, ...children) {
 let db = null;               // CardDB — данные карточек
 let ui = null;               // WebUI — мост «экран ↔ ответ»
 let gameState = null;        // текущая партия — для панелей осмотра
-let logLines = [];
 let cbHistory = [];
 let cbRound = 0;
 let waiting = false;      // ответ отправлен, ждём следующий экран
@@ -57,9 +56,7 @@ function startGame(cont) {
   saveGame(state); // новая партия сразу кладётся в хранилище
   gameState = state;
 
-  logLines = [];
   cbHistory = [];
-  renderLogs();
 
   $("#start").classList.add("hidden");
   $("#end").classList.add("hidden");
@@ -118,16 +115,17 @@ $("#btn-continue").addEventListener("click", () => startGame(true));
 
 // ---------- вкладки: главная область и панель осмотра ----------
 
-// Кнопки навигации
-const NAV_BTN_SELECTORS = [
-  "#nav-game-btn",
-  "#nav-teams-btn",
-  "#nav-market-btn",
-  "#nav-deck-btn",
-  "#logs-btn",
-  "#cb-btn",
-  "#help-btn",
-];
+// Кнопки навигации: вкладка → её кнопка (у части кнопок нет префикса nav-)
+const NAV_TAB_SELECTORS = {
+  game: "#nav-game-btn",
+  teams: "#nav-teams-btn",
+  market: "#nav-market-btn",
+  deck: "#nav-deck-btn",
+  logs: "#logs-btn",
+  cb: "#cb-btn",
+  help: "#help-btn",
+};
+const NAV_BTN_SELECTORS = Object.values(NAV_TAB_SELECTORS);
 
 // Текущая активная вкладка
 let activeTab = "game";
@@ -187,10 +185,8 @@ function showTab(tabName) {
   }
 
   // Активируем кнопку текущей вкладки
-  const activeBtn = tabName === "cb" ? $("#cb-btn") : $(`#nav-${tabName}-btn`);
-  if (activeBtn) {
-    activeBtn.classList.add("active");
-  }
+  const activeBtn = $(NAV_TAB_SELECTORS[tabName] || NAV_TAB_SELECTORS.game);
+  activeBtn.classList.add("active");
 
   activeTab = tabName;
 }
@@ -209,7 +205,7 @@ for (const sel of NAV_BTN_SELECTORS) {
 
 // ---------- панели осмотра ----------
 
-function panelHead(panel, title) {
+function panelHead(title) {
   return el("div", { class: "panel-head" },
     el("span", { class: "panel-title", text: title }));
 }
@@ -218,7 +214,7 @@ function panelHead(panel, title) {
 
 function renderTeamsPanel() {
   const box = $("#tab-teams");
-  box.replaceChildren(panelHead("#tab-teams", "Команды за столом"));
+  box.replaceChildren(panelHead("Команды за столом"));
   if (!gameState) return;
   // чья очередь — по активному экрану (ctx.table показывается только для ходящей команды)
   const turnName = currentScreen && currentScreen.ctx && currentScreen.ctx.table
@@ -234,7 +230,7 @@ function renderTeamsPanel() {
 
 function renderMarketPanel() {
   const box = $("#tab-market");
-  box.replaceChildren(panelHead("#tab-market", "Рынок: торги и сделки у ЦБ"));
+  box.replaceChildren(panelHead("Рынок: торги и сделки у ЦБ"));
   if (!gameState) return;
   renderMarket(box, marketView(gameState, db));
 }
@@ -267,7 +263,7 @@ function deckList(box, title, ids) {
 
 function renderDeckPanel() {
   const box = $("#tab-deck");
-  box.replaceChildren(panelHead("#tab-deck", "Колода: что осталось"));
+  box.replaceChildren(panelHead("Колода: что осталось"));
   if (!gameState) return;
   deckList(box, "В колоде (ещё не выпали)", gameState.deck);
   deckList(box, "В сбросе", gameState.discard);
@@ -283,8 +279,8 @@ function renderDeckPanel() {
 
 function renderLogsPanel() {
   const box = $("#tab-logs");
-  box.replaceChildren(panelHead("#tab-logs", "События партии"));
-  const lines = gameState && gameState.log.length ? gameState.log : logLines;
+  box.replaceChildren(panelHead("События партии"));
+  const lines = gameState ? gameState.log : [];
   if (!lines.length) {
     box.append(el("div", { class: "muted", text: "Событий пока нет." }));
     return;
@@ -297,7 +293,7 @@ function renderLogsPanel() {
 
 function renderCbPanel() {
   const box = $("#tab-cb");
-  box.replaceChildren(panelHead("#tab-cb", "Решения ЦБ по раундам"));
+  box.replaceChildren(panelHead("Решения ЦБ по раундам"));
   if (!cbHistory.length) {
     box.append(el("div", { class: "muted", text: "Партия ещё не начиналась." }));
     return;
@@ -312,7 +308,7 @@ function renderCbPanel() {
 
 function renderHelpPanel() {
   const box = $("#tab-help");
-  box.replaceChildren(panelHead("#tab-help", "Справка: как играть"));
+  box.replaceChildren(panelHead("Справка: как играть"));
   const steps = [
     ["ШАГ 1", "Финансирование: команда берёт или возвращает долг, покупает улучшение "
       + "или специализацию и завершает ход."],
@@ -400,22 +396,7 @@ function renderScreen(screen) {
     waiting = false;
     setWaiting(false);
   }
-  const logs = (screen.ctx && screen.ctx.logs) || [];
-  if (logs.length) {
-    logLines.push(...logs);
-    if (logLines.length > 80) logLines = logLines.slice(-80);
-  }
   refreshActiveTab();
-}
-
-function renderLogs() {
-  const box = $("#logs-panel");
-  if (!box) return;
-  box.replaceChildren(panelHead("#logs-panel", "События партии"));
-  for (const line of logLines.slice(-40)) {
-    box.append(el("div", { class: "log-line", text: line }));
-  }
-  box.scrollTop = box.scrollHeight;
 }
 
 function dots(total, current) {
@@ -674,14 +655,6 @@ function renderControl(screen) {
       el("button", { class: "step-btn", text: "+", onclick: () => step(1) }),
       el("button", { class: "big-btn", onclick: go }, "ОК"),
     ));
-  } else if (t === "text") {
-    box.append(el("div", { class: "prompt", text: screen.prompt || "" }));
-    const inp = el("input", { type: "text" });
-    inp.value = screen.default || "";
-    const go = () => sendAnswer(inp.value);
-    inp.addEventListener("change", go);
-    box.append(el("div", { class: "choices inline" }, inp,
-      el("button", { class: "big-btn", onclick: go }, "ОК")));
   } else if (t === "confirm") {
     box.append(el("div", { class: "confirm-title", text: screen.title }));
     const det = el("div", { class: "confirm-details" });

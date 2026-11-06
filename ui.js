@@ -13,15 +13,12 @@ const STICKY_KEYS = ["header", "table", "market", "status", "auction_card"];
 function dealCardView(c, proReq) {
   const net = c.kind === "A" ? c.income * c.term : c.payoff;
   const out = {
-    id: c.id,
     name: c.name,
-    sector: c.sector || "",
     body: c.body,
     term: c.term,
     risk: c.risk,
     income_text: kindStr(c),
     net,
-    kind: c.kind,
   };
   if (proReq) out.pro_req = `Только для: ${proReq}`;
   return out;
@@ -69,7 +66,7 @@ function teamTableView(team, state, db) {
   };
 }
 
-function statusRowView(t, state, db) {
+function statusRowView(t, db) {
   const risk = totalRisk(t, db);
   return {
     name: t.name,
@@ -127,18 +124,10 @@ class WebUI {
     if (r) r(value);
   }
 
-  get waiting() {
-    return this._pending !== null;
-  }
-
   // ---------- контекст (что игрок видит) ----------
 
   clear() {
     for (const k of STICKY_KEYS) delete this.ctx[k];
-  }
-
-  clearNotes() {
-    delete this.ctx.notes;
   }
 
   note(msg) {
@@ -181,18 +170,15 @@ class WebUI {
   }
 
   showStatus(state, db) {
-    this.ctx.status = state.teams.map((t) => statusRowView(t, state, db));
+    this.ctx.status = state.teams.map((t) => statusRowView(t, db));
   }
 
   showAuctionCard(card, db, extra = "", bids = null) {
     this.ctx.auction_card = {
       ...dealCardView(card, proRequirement(card, db)),
-      price: card.body,
-      summary: kindStr(card),
       extra,
       bids: bids ? bids.map((item) => ({
         name: item.team.name,
-        bid: item.bid,
         status: item.bid === null ? (item.reason || "пас") : `ставка ${item.bid}`,
       })) : [],
     };
@@ -214,10 +200,6 @@ class WebUI {
 
   async askYesNo(prompt, def = true) {
     return !!(await this._ask({ type: "yes_no", prompt, default: def }));
-  }
-
-  async askText(prompt, def = "") {
-    return String(await this._ask({ type: "text", prompt, default: def }));
   }
 
   async throwDice() {

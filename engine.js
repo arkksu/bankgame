@@ -89,7 +89,6 @@ function monthlyCost(team, db) {
 
 class CardDB {
   constructor(data) {
-    this.raw = data;
     this.rounds = data.rounds;
     this.starting_capital = data.starting_capital;
     this.starting_liquidity = data.starting_liquidity;
@@ -100,7 +99,6 @@ class CardDB {
     this.discount_cards = [...data.discount_cards];
     this.capital_exchange_rate = data.capital_exchange_rate;
     this.capital_exchange_max_per_round = data.capital_exchange_max_per_round;
-    this.risk_line_max = data.risk_line_max;
     this.funding = Object.fromEntries(data.funding.map((item) => [item.id, item]));
     this.deals = Object.fromEntries(data.deals.map((item) => [item.id, item]));
     this.improvements = Object.fromEntries(data.improvements.map((item) => [item.id, item]));
@@ -206,7 +204,6 @@ class GameState {
     this.free_pool = data.free_pool || {};
     this.deposit_free_used = data.deposit_free_used || {};
     this.next_uid = data.next_uid ?? 1;
-    this.eliminated = data.eliminated || {};
     this.turn_team = data.turn_team ?? 0;
     this.pro_mixed = !!data.pro_mixed;
     this.scored = !!data.scored;
@@ -224,7 +221,7 @@ class GameState {
       market_lots: [...this.market_lots], active_stress: [...this.active_stress],
       pending_stress: [...this.pending_stress], free_pool: { ...this.free_pool },
       deposit_free_used: { ...this.deposit_free_used }, next_uid: this.next_uid,
-      eliminated: { ...this.eliminated }, turn_team: this.turn_team, pro_mixed: this.pro_mixed,
+      turn_team: this.turn_team, pro_mixed: this.pro_mixed,
       scored: this.scored, log: [...this.log], cb_decisions: JSON.parse(JSON.stringify(this.cb_decisions)),
     };
   }

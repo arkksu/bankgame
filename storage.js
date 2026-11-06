@@ -67,9 +67,3 @@ function appendResult(record) {
   }
   return rec;
 }
-
-function clearResults() {
-  try {
-    localStorage.removeItem(RESULTS_KEY);
-  } catch (e) { /* ignore */ }
-}
