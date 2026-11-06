@@ -1,73 +1,91 @@
-/* Банковская игра — движок на чистом JS (без сервера и без Python).
+/* Банковская игра — единый локальный движок.
  *
- * Порт: game/core.py, game/cards.py, game/textutil.py, game/engine.py.
- * Движок не рисует сам: он создаёт экраны через объект ui (см. ui.js)
- * и ждёт ответы игрока — методы ввода возвращают Promise.
+ * Движок отвечает за правила и состояние, но не знает о DOM.
+ * Все интерактивные экраны проходят через один Board и один тип Action.
  */
 "use strict";
 
-// ============ вспомогательные функции ============
+const FUNDING_SLOTS = 4;
+const RETURNABLE_FUNDING = ["deposits", "mbk", "penalty_credit"];
 
-function shuffle(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
+function shuffle(items) {
+  for (let i = items.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    const t = arr[i];
-    arr[i] = arr[j];
-    arr[j] = t;
+    [items[i], items[j]] = [items[j], items[i]];
   }
-  return arr;
+  return items;
 }
 
-function choice(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
+function choice(items) {
+  return items[Math.floor(Math.random() * items.length)];
 }
 
-// ============ textutil.py ============
-
-/** Склонение: 1 очко, 2 очка, 5 очков. */
-function plural(n, one, few, many) {
-  if (n % 10 === 1 && n % 100 !== 11) return one;
-  if (n % 10 >= 2 && n % 10 <= 4 && !(n % 100 >= 12 && n % 100 <= 14)) return few;
-  return many;
-}
-
-/** Понятное описание выплат сделки без терминов «Тип А/Б». */
 function kindStr(card) {
-  if (card.kind === "A") {
-    const total = card.income * card.term;
-    return `доход каждый раунд +${card.income} (всего +${total})`;
-  }
+  if (card.kind === "A") return `доход каждый раунд +${card.income} (всего +${card.income * card.term})`;
   return `весь куш в конце +${card.payoff}`;
 }
 
-/** Имена банков, которым доступна PRO-сделка (иначе null). */
-function proRequirement(card, db) {
-  const pro = card.pro;
-  if (!pro) return null;
-  const names = Object.values(db.bank_types)
-    .filter((b) => (b.pro || []).includes(pro))
-    .map((b) => b.name);
-  return names.length ? names.join(", ") : "недоступна";
-}
-
-/** Чистый доход сделки: Тип А — суммарный, Тип Б — куш. */
 function dealNet(card) {
   return card.kind === "A" ? card.income * card.term : card.payoff;
 }
 
-function cPerTxt(f, rate) {
-  return String(f.per_round === "key_rate" ? rate : f.per_round);
+function proRequirement(card, db) {
+  if (!card.pro) return null;
+  const names = Object.values(db.bank_types)
+    .filter((bank) => (bank.pro || []).includes(card.pro))
+    .map((bank) => bank.name);
+  return names.length ? names.join(", ") : "недоступна";
 }
 
 function deductCapital(team, amount) {
-  team.capital = Math.max(0, team.capital - amount);
+  team.capital = Math.max(0, team.capital - Math.max(0, amount));
 }
 
-function stateMbkRate(state, db) {
-  return db.mbkRate(state.round_number, state.active_stress);
+function dealRisk(team, deal, db) {
+  const card = db.deals[deal.card_id];
+  if (!team.improvements.includes("ai_scoring")) return card.risk;
+  const improvement = db.improvements.ai_scoring;
+  return Math.max(improvement.min_risk, card.risk - improvement.risk_reduction);
 }
 
-// ============ cards.py: CardDB ============
+function totalRisk(team, db) {
+  return team.deals.reduce((sum, deal) => sum + dealRisk(team, deal, db), 0);
+}
+
+function riskLimit(team, db) {
+  let limit = team.capital;
+  if (team.improvements.includes("compliance")) {
+    limit += db.improvements.compliance.risk_overcap;
+  }
+  return limit;
+}
+
+function canAddRisk(team, risk, db) {
+  return totalRisk(team, db) + risk <= riskLimit(team, db);
+}
+
+function conveyorLimit(team, db) {
+  return db.bank_types[team.bank_type].conveyor_limit;
+}
+
+function allowedDeal(team, card, db) {
+  if (team.deals.some((deal) => deal.card_id === card.id)) return false;
+  const bank = db.bank_types[team.bank_type];
+  if (card.pro && !(bank.pro || []).includes(card.pro)) return false;
+  if ((card.pro === "kredity" || card.pro === "invest") && team.bank_type === "base") return false;
+  if (card.pro && (bank.forbidden_deals || []).includes(card.pro)) return false;
+  return true;
+}
+
+function dealPrice(team, card, db) {
+  let price = card.body;
+  if (card.pro === "invest") price -= db.bank_types[team.bank_type].invest_body_discount || 0;
+  return Math.max(0, price);
+}
+
+function monthlyCost(team, db) {
+  return db.bank_types[team.bank_type].monthly_cost;
+}
 
 class CardDB {
   constructor(data) {
@@ -81,1457 +99,840 @@ class CardDB {
     this.pro_deal_copies = data.pro_deal_copies ?? data.auction_deal_copies;
     this.discount_cards = [...data.discount_cards];
     this.capital_exchange_rate = data.capital_exchange_rate;
+    this.capital_exchange_max_per_round = data.capital_exchange_max_per_round;
     this.risk_line_max = data.risk_line_max;
-
-    this.funding = {};
-    for (const f of data.funding) this.funding[f.id] = f;
-    this.deals = {};
-    for (const d of data.deals) this.deals[d.id] = d;
-    this.improvements = {};
-    for (const i of data.improvements) this.improvements[i.id] = i;
-    this.bank_types = {};
-    for (const b of data.bank_types) this.bank_types[b.id] = b;
-    this.cb_decisions = {};
+    this.funding = Object.fromEntries(data.funding.map((item) => [item.id, item]));
+    this.deals = Object.fromEntries(data.deals.map((item) => [item.id, item]));
+    this.improvements = Object.fromEntries(data.improvements.map((item) => [item.id, item]));
+    this.bank_types = Object.fromEntries(data.bank_types.map((item) => [item.id, item]));
+    this.cb_decisions = Object.fromEntries(data.cb_decisions.map((item) => [item.round, item]));
     this.cb_list = data.cb_decisions;
-    for (const c of data.cb_decisions) this.cb_decisions[c.round] = c;
-    this.stress_scenarios = {};
-    for (const s of data.stress_scenarios) this.stress_scenarios[s.id] = s;
-
-    this._validate();
+    this.stress_scenarios = Object.fromEntries(data.stress_scenarios.map((item) => [item.id, item]));
   }
 
   static load() {
-    if (typeof CARDS === "undefined") {
-      throw new Error("нет данных карточек (cards-data.js не подключён)");
-    }
-    if (typeof START_CONFIG === "undefined") {
-      throw new Error("нет конфигурации партии (config.js не подключён)");
-    }
-    // стартовые значения берём из config.js, карточки — из cards-data.js
+    if (typeof CARDS === "undefined") throw new Error("Нет данных карточек.");
+    if (typeof START_CONFIG === "undefined") throw new Error("Нет конфигурации партии.");
     return new CardDB({ ...CARDS, ...START_CONFIG });
   }
 
-  _validate() {
-    const errors = [];
-    for (const d of Object.values(this.deals)) {
-      for (const key of ["id", "name", "sector", "kind", "body", "term", "income",
-                         "payoff", "risk", "default_on", "default_penalty"]) {
-        if (!(key in d)) errors.push(`сделка ${d.id || "?"}: нет поля ${key}`);
-      }
-      if (d.kind !== "A" && d.kind !== "B") {
-        errors.push(`сделка ${d.id}: kind должен быть A или B`);
-      }
-      if (d.kind === "B" && (d.income || 0) !== 0) {
-        errors.push(`сделка ${d.id}: тип Б не должен иметь доход по раундам`);
-      }
-    }
-    for (let r = 1; r <= this.rounds; r++) {
-      if (!(r in this.cb_decisions)) errors.push(`нет решения ЦБ для раунда ${r}`);
-    }
-    for (const fid of ["deposits", "mbk", "bonds", "penalty_credit"]) {
-      if (!(fid in this.funding)) errors.push(`нет пассива ${fid}`);
-    }
-    if (!("base" in this.bank_types)) errors.push("нет базового типа банка");
-    if (!Array.isArray(this.discount_cards)) {
-      errors.push("discount_cards должен быть массивом");
-    } else if (this.discount_cards.some((v) => typeof v !== "number" || !isFinite(v))) {
-      errors.push("в discount_cards должны быть только числа");
-    }
-    if (errors.length) {
-      throw new Error("Ошибки в данных карточек:\n" + errors.join("\n"));
-    }
-  }
-
   freeDeals() {
-    return Object.values(this.deals).filter((d) => !d.auction);
+    return Object.values(this.deals).filter((deal) => !deal.auction);
   }
 
-  cbDecision(roundNumber, state) {
-    if (state && state.cb_decisions && state.cb_decisions[roundNumber]) {
-      return state.cb_decisions[roundNumber];
-    }
-    return this.cb_decisions[roundNumber];
+  cbDecision(round, state) {
+    return state?.cb_decisions?.[round] || this.cb_decisions[round];
   }
 
-  mbkRate(roundNumber, activeStress, state) {
-    const rnd = Math.min(roundNumber, this.rounds);
-    let rate = this.cbDecision(rnd, state).mbk_rate ?? 2;
-    if ((activeStress || []).includes("S3") && rnd === 6) {
-      rate = this.stress_scenarios.S3.mbk_rate;
-    }
-    return rate;
+  mbkRate(round, stress, state) {
+    const decision = this.cbDecision(Math.min(round, this.rounds), state);
+    if ((stress || []).includes("S3") && round === 6) return this.stress_scenarios.S3.mbk_rate;
+    return decision.mbk_rate ?? 2;
   }
 }
 
-// ============ core.py: состояние партии ============
-
-function dealFromDict(x) {
+function dealFromDict(data) {
   return {
-    uid: x.uid,
-    card_id: x.card_id,
-    column: x.column,
-    discount: x.discount ?? null,
-    discount_used: !!x.discount_used,
+    uid: data.uid,
+    card_id: data.card_id,
+    column: data.column,
+    discount: data.discount ?? null,
+    discount_used: !!data.discount_used,
   };
 }
 
-function fundingFromDict(x) {
+function fundingFromDict(data) {
   return {
-    uid: x.uid,
-    card_id: x.card_id,
-    rounds_left: x.rounds_left ?? null,
-    free_round: x.free_round ?? 0,
+    uid: data.uid,
+    card_id: data.card_id,
+    rounds_left: data.rounds_left ?? null,
+    free_round: data.free_round ?? 0,
   };
 }
 
 class Team {
-  constructor({
-    name, capital, liquidity, bank_type = "base",
-    deals = [], funding = [], improvements = [], bid_hand = [], bid_used = [],
-    reserve_used = false, capital_exchanged_this_round = 0,
-  }) {
-    this.name = name;
-    this.capital = capital;
-    this.liquidity = liquidity;
-    this.bank_type = bank_type;
-    this.deals = deals;            // [{uid, card_id, column, discount, discount_used}]
-    this.funding = funding;        // [{uid, card_id, rounds_left, free_round}]
-    this.improvements = improvements;
-    this.bid_hand = bid_hand;      // свободные карточки скидки
-    this.bid_used = bid_used;      // сгоревшие в этом раунде — вернутся в следующем
-    this.reserve_used = reserve_used;
-    this.capital_exchanged_this_round = capital_exchanged_this_round; // пар обмена за раунд
+  constructor(data) {
+    this.name = data.name;
+    this.capital = data.capital;
+    this.liquidity = data.liquidity;
+    this.bank_type = data.bank_type || "base";
+    this.deals = data.deals || [];
+    this.funding = data.funding || [];
+    this.improvements = data.improvements || [];
+    this.bid_hand = data.bid_hand || [];
+    this.bid_used = data.bid_used || [];
+    this.reserve_used = !!data.reserve_used;
+    this.capital_exchanged_this_round = data.capital_exchanged_this_round || 0;
   }
 
-  dealByUid(uid) {
-    return this.deals.find((d) => d.uid === uid) || null;
-  }
-
-  fundingByUid(uid) {
-    return this.funding.find((f) => f.uid === uid) || null;
-  }
-
-  hasImprovement(id) {
-    return this.improvements.includes(id);
-  }
-
-  get hasPenaltyCredit() {
-    return this.funding.some((f) => f.card_id === "penalty_credit");
-  }
-
-  get hasReserves() {
-    return this.improvements.includes("reserve_fund") && !this.reserve_used;
-  }
+  dealByUid(uid) { return this.deals.find((deal) => deal.uid === uid) || null; }
+  fundingByUid(uid) { return this.funding.find((item) => item.uid === uid) || null; }
+  hasImprovement(id) { return this.improvements.includes(id); }
+  hasPenaltyCredit() { return this.funding.some((item) => item.card_id === "penalty_credit"); }
+  hasReserves() { return this.hasImprovement("reserve_fund") && !this.reserve_used; }
 
   toDict() {
     return {
-      name: this.name,
-      capital: this.capital,
-      liquidity: this.liquidity,
-      bank_type: this.bank_type,
-      deals: this.deals.map((d) => ({ ...d })),
-      funding: this.funding.map((f) => ({ ...f })),
-      improvements: [...this.improvements],
-      bid_hand: [...this.bid_hand],
-      bid_used: [...this.bid_used],
-      reserve_used: this.reserve_used,
+      name: this.name, capital: this.capital, liquidity: this.liquidity,
+      bank_type: this.bank_type, deals: this.deals.map((item) => ({ ...item })),
+      funding: this.funding.map((item) => ({ ...item })), improvements: [...this.improvements],
+      bid_hand: [...this.bid_hand], bid_used: [...this.bid_used], reserve_used: this.reserve_used,
       capital_exchanged_this_round: this.capital_exchanged_this_round,
     };
   }
 
-  static fromDict(d) {
+  static fromDict(data) {
     return new Team({
-      name: d.name,
-      capital: d.capital,
-      liquidity: d.liquidity,
-      bank_type: d.bank_type,
-      deals: (d.deals || []).map(dealFromDict),
-      funding: (d.funding || []).map(fundingFromDict),
-      improvements: [...(d.improvements || [])],
-      bid_hand: [...(d.bid_hand || [])],
-      bid_used: [...(d.bid_used || [])],
-      reserve_used: !!d.reserve_used,
-      capital_exchanged_this_round: d.capital_exchanged_this_round ?? 0,
+      ...data,
+      deals: (data.deals || []).map(dealFromDict),
+      funding: (data.funding || []).map(fundingFromDict),
+      improvements: [...(data.improvements || [])],
+      bid_hand: [...(data.bid_hand || [])],
+      bid_used: [...(data.bid_used || [])],
     });
   }
 }
 
 class GameState {
-  constructor(d = {}) {
-    this.teams = d.teams || [];
-    this.round_number = d.round_number ?? 1;
-    this.phase = d.phase || "round_start";
-    this.deck = d.deck || [];
-    this.discard = d.discard || [];
-    this.market_lots = d.market_lots || [];
-    this.active_stress = d.active_stress || [];
-    this.pending_stress = d.pending_stress || [];
-    this.free_pool = d.free_pool || {};
-    this.deposit_free_used = d.deposit_free_used || {};
-    this.next_uid = d.next_uid ?? 1;
-    this.eliminated = d.eliminated || {};
-    this.turn_team = d.turn_team ?? 0;
-    this.pro_mixed = !!d.pro_mixed;
-    this.scored = !!d.scored;
-    this.log = d.log || [];
-    this.cb_decisions = d.cb_decisions || {};
+  constructor(data = {}) {
+    this.teams = data.teams || [];
+    this.round_number = data.round_number ?? 1;
+    this.phase = data.phase || "round_start";
+    this.deck = data.deck || [];
+    this.discard = data.discard || [];
+    this.market_lots = data.market_lots || [];
+    this.active_stress = data.active_stress || [];
+    this.pending_stress = data.pending_stress || [];
+    this.free_pool = data.free_pool || {};
+    this.deposit_free_used = data.deposit_free_used || {};
+    this.next_uid = data.next_uid ?? 1;
+    this.eliminated = data.eliminated || {};
+    this.turn_team = data.turn_team ?? 0;
+    this.pro_mixed = !!data.pro_mixed;
+    this.scored = !!data.scored;
+    this.log = data.log || [];
+    this.cb_decisions = data.cb_decisions || {};
   }
 
-  allocUid() {
-    const uid = this.next_uid;
-    this.next_uid += 1;
-    return uid;
-  }
-
-  get finished() {
-    return this.phase === "finished";
-  }
+  allocUid() { return this.next_uid++; }
+  get finished() { return this.phase === "finished"; }
 
   toDict() {
     return {
-      teams: this.teams.map((t) => t.toDict()),
-      round_number: this.round_number,
-      phase: this.phase,
-      deck: [...this.deck],
-      discard: [...this.discard],
-      market_lots: [...this.market_lots],
-      active_stress: [...this.active_stress],
-      pending_stress: [...this.pending_stress],
-      free_pool: { ...this.free_pool },
-      deposit_free_used: { ...this.deposit_free_used },
-      next_uid: this.next_uid,
-      eliminated: { ...this.eliminated },
-      turn_team: this.turn_team,
-      pro_mixed: this.pro_mixed,
-      scored: this.scored,
-      log: [...this.log],
-      cb_decisions: JSON.parse(JSON.stringify(this.cb_decisions)),
+      teams: this.teams.map((team) => team.toDict()), round_number: this.round_number,
+      phase: this.phase, deck: [...this.deck], discard: [...this.discard],
+      market_lots: [...this.market_lots], active_stress: [...this.active_stress],
+      pending_stress: [...this.pending_stress], free_pool: { ...this.free_pool },
+      deposit_free_used: { ...this.deposit_free_used }, next_uid: this.next_uid,
+      eliminated: { ...this.eliminated }, turn_team: this.turn_team, pro_mixed: this.pro_mixed,
+      scored: this.scored, log: [...this.log], cb_decisions: JSON.parse(JSON.stringify(this.cb_decisions)),
     };
   }
 
-  static fromDict(d) {
+  static fromDict(data) {
+    let phase = data.phase || "round_start";
+    if (phase === "auction_lots" || phase === "auction_free") phase = "auction";
     return new GameState({
-      teams: (d.teams || []).map((t) => Team.fromDict(t)),
-      round_number: d.round_number,
-      phase: d.phase,
-      deck: [...(d.deck || [])],
-      discard: [...(d.discard || [])],
-      market_lots: [...(d.market_lots || [])],
-      active_stress: [...(d.active_stress || [])],
-      pending_stress: [...(d.pending_stress || [])],
-      free_pool: { ...(d.free_pool || {}) },
-      deposit_free_used: { ...(d.deposit_free_used || {}) },
-      next_uid: d.next_uid,
-      eliminated: { ...(d.eliminated || {}) },
-      turn_team: d.turn_team,
-      pro_mixed: d.pro_mixed,
-      scored: d.scored,
-      log: [...(d.log || [])],
-      cb_decisions: d.cb_decisions || {},
+      ...data,
+      phase,
+      teams: (data.teams || []).map(Team.fromDict),
+      deck: [...(data.deck || [])], discard: [...(data.discard || [])],
+      market_lots: [...(data.market_lots || [])], active_stress: [...(data.active_stress || [])],
+      pending_stress: [...(data.pending_stress || [])], free_pool: { ...(data.free_pool || {}) },
+      deposit_free_used: { ...(data.deposit_free_used || {}) }, log: [...(data.log || [])],
     });
   }
 }
 
-// ============ производные правила (core.py) ============
-
-/** Эффективный Риск сделки с учётом «ИИ-Скоринг». */
-function dealRisk(team, deal, db) {
-  const card = db.deals[deal.card_id];
-  let risk = card.risk;
-  if (team.hasImprovement("ai_scoring")) {
-    const imp = db.improvements.ai_scoring;
-    risk = Math.max(imp.min_risk, risk - imp.risk_reduction);
-  }
-  return risk;
-}
-
-function totalRisk(team, db) {
-  return team.deals.reduce((sum, d) => sum + dealRisk(team, d, db), 0);
-}
-
-function riskLimit(team, db) {
-  let limit = team.capital;
-  if (team.hasImprovement("compliance")) {
-    limit += db.improvements.compliance.risk_overcap;
-  }
-  return limit;
-}
-
-function canAddRisk(team, newRisk, db) {
-  return totalRisk(team, db) + newRisk <= riskLimit(team, db);
-}
-
-function conveyorLimit(team, db) {
-  return db.bank_types[team.bank_type].conveyor_limit;
-}
-
-function allowedDeal(team, card, db) {
-  if (team.deals.some((d) => d.card_id === card.id)) return false;
-  const bank = db.bank_types[team.bank_type];
-  const pro = card.pro;
-  if (pro && !(bank.pro || []).includes(pro)) return false;
-  if ((pro === "kredity" || pro === "invest") && team.bank_type === "base") return false;
-  const forbidden = bank.forbidden_deals || [];
-  if (pro && forbidden.includes(pro)) return false;
-  return true;
-}
-
-function monthlyCost(team, db) {
-  return db.bank_types[team.bank_type].monthly_cost;
-}
-
-// ============ Создание партии (engine.py) ============
-
-const FUNDING_SLOTS = 4;
-// что можно вернуть в ЦБ на ШАГе 2 (info.md: Вклады и МБК; штрафной — по желанию)
-const RETURNABLE_FUNDING = ["deposits", "mbk", "penalty_credit"];
-
-function newGame(db, teamNames) {
-  // имена команд приходят со стартового экрана (слайдер 2..6); без них — классика
-  const names = (Array.isArray(teamNames) && teamNames.length)
-    ? teamNames
-    : ["Команда 1", "Команда 2"];
-  const state = new GameState({ teams: [] });
+function newGame(db, names) {
+  const state = new GameState();
   const used = new Set();
-  names.forEach((raw, i) => {
-    let name = String(raw || "").trim() || `Команда ${i + 1}`;
+  const teamNames = Array.isArray(names) && names.length ? names : ["Команда 1", "Команда 2"];
+  for (let index = 0; index < teamNames.length; index++) {
+    let name = String(teamNames[index] || "").trim() || `Команда ${index + 1}`;
     let suffix = 2;
     while (used.has(name)) name = `${name} (${suffix++})`;
     used.add(name);
     state.teams.push(new Team({
-      name,
-      capital: db.starting_capital,
-      liquidity: db.starting_liquidity,
+      name, capital: db.starting_capital, liquidity: db.starting_liquidity,
       bid_hand: [...db.discount_cards],
     }));
-  });
-
-  for (const card of db.freeDeals()) {
-    state.free_pool[card.id] = db.free_deal_copies;
   }
-
-  const deck = [];
+  for (const card of db.freeDeals()) state.free_pool[card.id] = db.free_deal_copies;
   for (const card of Object.values(db.deals)) {
     if (card.auction && !card.pro) {
-      for (let i = 0; i < db.auction_deal_copies; i++) deck.push(card.id);
+      for (let i = 0; i < db.auction_deal_copies; i++) state.deck.push(card.id);
     }
   }
-  shuffle(deck);
-  state.deck = deck;
-
-  const cbDecs = [...db.cb_list];
-  shuffle(cbDecs);
-  const cbMap = {};
-  cbDecs.forEach((c, i) => {
-    const roundNum = i + 1;
-    cbMap[roundNum] = { ...c, round: roundNum };
-  });
-  state.cb_decisions = cbMap;
-
-  state.phase = "round_start";
-  state.round_number = 1;
+  shuffle(state.deck);
+  const decisions = [...db.cb_list];
+  shuffle(decisions);
+  decisions.forEach((decision, index) => { state.cb_decisions[index + 1] = { ...decision, round: index + 1 }; });
   return state;
 }
 
-// ============ Игровая сессия ============
+class Board {
+  constructor(game) { this.game = game; }
+  get ui() { return this.game.ui; }
+  get state() { return this.game.state; }
+  get db() { return this.game.db; }
 
-class Game {
-  constructor(db, state, uiRef, onRoundEnd = null) {
-    this.db = db;
-    this.state = state;
-    this.ui = uiRef;
-    this.onRoundEnd = onRoundEnd;
-  }
-
-  // ------ служебные хелперы UI ------
-
-  stepLabel(n) {
+  title(step, text) {
+    // ШАГ 5 существует только в партии, где после 5-го раунда идёт стресс-тест
     const total = this.state.round_number === 5 ? 5 : 4;
-    return `ШАГ ${n}/${total}`;
+    return `ШАГ ${step}/${total} — ${text}`;
   }
 
-  async infoBack(...msgs) {
-    for (const m of msgs) this.ui.note(m);
-    await this.ui.pause("Назад");
+  desk(step, text, showStatus = true) {
+    this.ui.clear();
+    this.ui.header(this.state, this.db, this.title(step, text));
+    if (showStatus) this.ui.showStatus(this.state, this.db);
   }
 
-  async confirmOrCancel(title, details) {
-    if (!(await this.ui.confirm(title, details))) {
-      this.ui.note("Отменено.");
-      return false;
+  turn(team, step, text) {
+    this.ui.clear();
+    this.ui.header(this.state, this.db, this.title(step, text));
+    this.ui.showTable(team, this.state, this.db);
+    this.ui.showStatus(this.state, this.db);
+  }
+
+  /** Обновить стол команды и общий статус прямо во время действия. */
+  refresh(team) {
+    this.ui.showTable(team, this.state, this.db);
+    this.ui.showStatus(this.state, this.db);
+  }
+
+  async pick(prompt, pairs, back = "Назад") {
+    const options = pairs.map(([label, value]) => ({ label, value }));
+    if (back) options.push({ label: back, value: null });
+    if (!options.length) return null;
+    const index = await this.ui.askChoice(prompt, options);
+    return options[index]?.value ?? null;
+  }
+
+  async confirm(title, lines) {
+    const accepted = await this.ui.confirm(title, lines);
+    if (!accepted) this.ui.note("Отменено.");
+    return accepted;
+  }
+
+  async pause(text = "Продолжить") { return this.ui.pause(text); }
+
+  async menu(team, prompt, actions) {
+    for (;;) {
+      const visible = actions.filter((action) => !action.when || action.when(team));
+      const options = visible.map((action) => ({
+        label: typeof action.label === "function" ? action.label(team) : action.label,
+        value: action,
+      }));
+      const index = await this.ui.askChoice(prompt, options);
+      const action = options[index]?.value;
+      if (!action) continue;
+      const done = await action.run(team);
+      if (done) return true;
     }
-    return true;
   }
 
-  hasLiquidity(team, price) {
-    if (team.liquidity < price) {
-      this.ui.note(`Не хватает денег: нужно ${price}, есть ${team.liquidity}.`);
-      return false;
-    }
-    return true;
+  finishAction() {
+    return {
+      label: "Завершить ход",
+      run: (team) => this.ui.askYesNo(`Завершить ход ${team.name}?`, true),
+    };
   }
 
-  /** Меню выбора с пунктом «Назад» -> выбранный payload или null. */
-  async pick(prompt, options, backLabel = "Назад") {
-    const opts = options.map(([label, value]) => ({ label, value }));
-    opts.push({ label: backLabel, value: null });
-    const idx = await this.ui.askChoice(prompt, opts);
-    return opts[idx].value;
-  }
-
-  _opts(pairs) {
-    return pairs.map(([label, value]) => ({ label, value }));
-  }
-
-  /** Экран хода команды: карточка команды → общий статус → варианты. */
-  drawTeamTurn(team, extra) {
-    const ui = this.ui;
-    ui.clear();
-    ui.header(this.state, this.db, extra);
-    ui.showTable(team, this.state, this.db);
-    ui.showStatus(this.state, this.db);
-  }
-
-  // ------ колода ------
-
-  mixProCards() {
-    const s = this.state;
-    if (s.pro_mixed) return;
-    for (const card of Object.values(this.db.deals)) {
-      if (card.auction && card.pro) {
-        for (let i = 0; i < this.db.pro_deal_copies; i++) s.deck.push(card.id);
+  async turnLoop(step, text, actions, prompt) {
+    while (this.state.turn_team < this.state.teams.length) {
+      const team = this.state.teams[this.state.turn_team];
+      this.turn(team, step, text);
+      if (await this.menu(team, prompt || "Что делаем?", actions)) {
+        this.state.turn_team += 1;
       }
     }
-    shuffle(s.deck);
-    s.pro_mixed = true;
+    this.state.turn_team = 0;
   }
 
-  draw() {
-    const s = this.state;
-    if (!s.deck.length && s.discard.length) {
-      s.deck = [...s.discard];
-      s.discard = [];
-      shuffle(s.deck);
-      this.ui.log("Колода пуста — сброс перемешан заново.", s);
-    }
-    if (!s.deck.length) return null;
-    return s.deck.shift();
+  async info(...messages) {
+    for (const message of messages) this.ui.note(message);
+    await this.pause("Назад");
   }
+}
 
-  // ------ главный цикл ------
+class Game {
+  constructor(db, state, ui, save) {
+    this.db = db;
+    this.state = state;
+    this.ui = ui;
+    this.save = save;
+    this.board = new Board(this);
+    this.steps = {
+      round_start: () => this.startRound(),
+      funding: () => this.fundingStep(),
+      auction: () => this.auctionStep(),
+      settlement: () => this.settlementStep(),
+      stress: () => this.stressStep(),
+      round_end: () => this.endRound(),
+    };
+  }
 
   async runLoop() {
-    const handlers = {
-      round_start: () => this.phaseRoundStart(),
-      funding: () => this.phaseFunding(),
-      auction_lots: () => this.phaseAuctionLot(),
-      auction_free: () => this.phaseFreeTake(),
-      settlement: () => this.phaseSettlement(),
-      stress: () => this.phaseStress(),
-      round_end: () => this.phaseRoundEnd(),
-    };
     while (!this.state.finished) {
-      const handler = handlers[this.state.phase];
-      if (!handler) break;
+      const handler = this.steps[this.state.phase];
+      if (!handler) throw new Error(`Неизвестная фаза: ${this.state.phase}`);
       await handler();
     }
   }
 
-  // ====== ШАГ 1: решение ЦБ и выкладка сделок ======
+  draw() {
+    if (!this.state.deck.length && this.state.discard.length) {
+      this.state.deck = [...this.state.discard];
+      this.state.discard = [];
+      shuffle(this.state.deck);
+      this.ui.log("Колода пуста — сброс перемешан заново.", this.state);
+    }
+    return this.state.deck.shift() || null;
+  }
 
-  async phaseRoundStart() {
-    const s = this.state, db = this.db, ui = this.ui;
-    if (this.onRoundEnd) this.onRoundEnd(s); // автосохранение в начале раунда
-    ui.clear();
-    const dec = db.cbDecision(s.round_number);
-    ui.header(s, db, `${this.stepLabel(1)} — Решение ЦБ и сделки на рынке`);
-    ui.note(dec.text);
+  mixPro() {
+    if (this.state.pro_mixed) return;
+    for (const card of Object.values(this.db.deals)) {
+      if (card.auction && card.pro) {
+        for (let i = 0; i < this.db.pro_deal_copies; i++) this.state.deck.push(card.id);
+      }
+    }
+    shuffle(this.state.deck);
+    this.state.pro_mixed = true;
+  }
 
+  async startRound() {
+    const s = this.state;
+    if (this.save) this.save(s);
+    const decision = this.db.cbDecision(s.round_number, s);
+    this.board.desk(1, "Открытие раунда · решение ЦБ и рынок");
+    this.ui.note(decision.text);
     if (s.round_number === 2) {
-      this.mixProCards();
-      ui.log("В колоду подмешаны сделки [PRO] (Уровень 2).", s);
+      this.mixPro();
+      this.ui.log("В колоду добавлены сделки PRO.", s);
     }
-
-    if (s.round_number === 6) await this.applyStressAtRoundStart();
-
-    const lots = s.teams.length + db.auction_lots_extra;
+    if (s.round_number === 6) await this.applyStress();
     s.market_lots = [];
-    for (let i = 0; i < lots; i++) {
-      const cid = this.draw();
-      if (cid) s.market_lots.push(cid);
+    for (let i = 0; i < s.teams.length + this.db.auction_lots_extra; i++) {
+      const id = this.draw();
+      if (id) s.market_lots.push(id);
     }
-
-    ui.showMarket(s, db);
-    ui.showStatus(s, db);
-    ui.note("На торгах каждая команда тайно кладёт карточку скидки: "
-      + "большая скидка повышает шанс забрать сделку, но уменьшает доход.");
-    await ui.pause();
-
+    this.ui.showMarket(s, this.db);
+    this.ui.showStatus(s, this.db);
+    this.ui.note("Шаг 1 — финансирование. После завершения ходов начнутся торги на шаге 2.");
     s.phase = "funding";
     s.turn_team = 0;
   }
 
-  async applyStressAtRoundStart() {
-    const s = this.state, db = this.db, ui = this.ui;
-    for (const sid of s.active_stress) {
-      const st = db.stress_scenarios[sid];
-      if (sid === "S2") {
-        for (const t of s.teams) {
-          const n = t.funding.filter((f) => f.card_id === "deposits").length;
-          if (n && t.hasImprovement(st.waived_by)) {
-            ui.log(`${t.name}: вклады защищены «Мобильным Приложением», набег обошёлся.`, s);
-          } else if (n) {
-            this.pay(t, n * st.deposit_penalty);
-            ui.log(`${t.name}: набег вкладчиков — ${n} вкладов × `
-              + `${st.deposit_penalty} = ${n * st.deposit_penalty} очков в ЦБ.`, s);
+  async applyStress() {
+    const s = this.state;
+    for (const id of s.active_stress) {
+      const stress = this.db.stress_scenarios[id];
+      if (id === "S2") {
+        for (const team of s.teams) {
+          const count = team.funding.filter((item) => item.card_id === "deposits").length;
+          if (!count) continue;
+          if (team.hasImprovement(stress.waived_by)) {
+            this.ui.log(`${team.name}: вклады защищены мобильным приложением.`, s);
+          } else {
+            this.pay(team, count * stress.deposit_penalty);
+            this.ui.log(`${team.name}: набег вкладчиков — списано ${count * stress.deposit_penalty}.`, s);
           }
         }
       }
-      if (sid === "S1") {
-        for (const t of s.teams) {
-          const cons = t.deals.filter((d) => db.deals[d.card_id].sector === "Стройка");
-          if (cons.length >= st.concentration_cards) {
-            deductCapital(t, st.concentration_penalty);
-            ui.log(`${t.name}: ${cons.length} карты Стройки — опасная концентрация, `
-              + `списано ${st.concentration_penalty} Капитала.`, s);
+      if (id === "S1") {
+        for (const team of s.teams) {
+          const count = team.deals.filter((deal) => this.db.deals[deal.card_id].sector === "Стройка").length;
+          if (count >= stress.concentration_cards) {
+            deductCapital(team, stress.concentration_penalty);
+            this.ui.log(`${team.name}: концентрация Стройки — −${stress.concentration_penalty} капитала.`, s);
           }
         }
       }
     }
-    if (s.active_stress.length) await ui.pause();
+    if (s.active_stress.length) await this.board.pause("Показать последствия");
   }
 
-  // ====== ШАГ 2: долги и покупки ======
-
-  fundingDetails(fid) {
-    const s = this.state, db = this.db;
-    const c = db.funding[fid];
-    const rate = db.mbkRate(s.round_number, s.active_stress);
-    const per = c.per_round;
-    const perTxt = per === "key_rate" ? `${rate} (по ставке ЦБ)` : String(per);
-    const lines = [
-      `+${c.liquidity} очков сейчас в кассу`,
-      `платёж ${perTxt} очков каждый раунд`,
+  async fundingStep() {
+    const actions = [
+      { label: "Взять долг у ЦБ", run: (team) => this.takeFunding(team) },
+      { label: "Купить улучшение или специализацию", run: (team) => this.buyUpgrade(team) },
+      { label: "Вернуть долг в ЦБ", when: (team) => team.funding.some((item) => RETURNABLE_FUNDING.includes(item.card_id)), run: (team) => this.returnFunding(team) },
+      this.board.finishAction(),
     ];
-    if (fid === "deposits") {
-      lines.push("вернуть в ЦБ можно в любой момент, отдав 10 очков");
-    } else if (fid === "mbk") {
-      lines.push("можно вернуть досрочно (отдать 10) или в конце раунда "
-        + "продлить, заплатив ставку");
-    } else if (fid === "bonds") {
-      lines.push("остаётся 3 раунда, раньше вернуть нельзя");
-    } else if (fid === "penalty_credit") {
-      lines.push("дорогой долг: пока он есть — нельзя покупать улучшения");
-    }
-    const dec = db.cbDecision(Math.min(s.round_number, db.rounds));
-    lines.push(`решение ЦБ этого раунда: «${dec.title}» — ${dec.text || ""}`);
-    if (fid === "deposits" && dec.free_first_deposit) {
-      lines.push("по решению ЦБ первая взятая карта вкладов в этом раунде "
-        + "обслуживается бесплатно");
-    }
-    return lines;
+    await this.board.turnLoop(1, "Долги и покупки в ЦБ", actions);
+    this.state.phase = "auction";
   }
 
-  async phaseFunding() {
-    const s = this.state, db = this.db, ui = this.ui;
-    if (s.turn_team >= s.teams.length) {
-      ui.clear();
-      ui.header(s, db, `${this.stepLabel(2)} — Долги и покупки в ЦБ`);
-      ui.showStatus(s, db);
-      ui.note("Все команды завершили ход в ЦБ.");
-      await ui.pause("Далее");
-      s.phase = "auction_lots";
-      s.turn_team = 0;
-      return;
-    }
-
-    const team = s.teams[s.turn_team];
-    this.drawTeamTurn(team, `${this.stepLabel(2)} — Долги и покупки в ЦБ`);
-    const tabs = [
-      ["Взять — новый долг у ЦБ (плюс денег сейчас, платёж каждый раунд)", "tab_take"],
-      ["Купить — Улучшение или новую специализацию банка", "tab_buy"],
-    ];
-    if (team.funding.some((f) => RETURNABLE_FUNDING.includes(f.card_id))) {
-      tabs.push(["Вернуть долг в ЦБ", "tab_return"]);
-    }
-    tabs.push(["Завершить ход — дальше", "do_done"]);
-    const idx = await ui.askChoice(`Что делаем`, this._opts(tabs));
-    const tab = tabs[idx][1];
-
-    if (tab === "tab_take") await this.fundingTake(team);
-    else if (tab === "tab_buy") await this.fundingBuy(team);
-    else if (tab === "tab_return") await this.fundingReturn(team);
-    else if (tab === "do_done") {
-      if (await ui.askYesNo(`Завершить ход ${team.name}?`, true)) s.turn_team += 1;
-    }
+  fundingRate(id) {
+    const item = this.db.funding[id];
+    return item.per_round === "key_rate" ? this.db.mbkRate(this.state.round_number, this.state.active_stress, this.state) : item.per_round;
   }
 
-  async fundingTake(team) {
-    const s = this.state, db = this.db, ui = this.ui;
-    const options = [];
-    if (team.funding.length < FUNDING_SLOTS) {
-      const bank = db.bank_types[team.bank_type];
-      for (const fid of Object.keys(db.funding)) {
-        const f = db.funding[fid];
-        if (f.forced) continue;
-        if ((bank.forbidden_funding || []).includes(fid)) continue;
-        const rate = db.mbkRate(s.round_number, s.active_stress);
-        const per = cPerTxt(f, rate);
-        options.push([`${f.name} — +${f.liquidity} сейчас, платёж ${per}/р.`, fid]);
-      }
-    }
-    if (!options.length) {
-      await this.infoBack("Брать нечего: либо слоты долгов заняты, либо банк не позволяет.");
-      return;
-    }
-    const fid = await this.pick("Что взять у ЦБ", options);
-    if (fid === null) return;
-
-    const c = db.funding[fid];
-    if (!(await this.confirmOrCancel(`Взять «${c.name}»?`, this.fundingDetails(fid)))) return;
-
+  async takeFunding(team) {
+    const bank = this.db.bank_types[team.bank_type];
+    if (team.funding.length >= FUNDING_SLOTS) return this.board.info("Все слоты долгов заняты.");
+    const pairs = Object.values(this.db.funding)
+      .filter((item) => !item.forced && !(bank.forbidden_funding || []).includes(item.id))
+      .map((item) => [`${item.name} · +${item.liquidity} сейчас · платёж ${this.fundingRate(item.id)}/р.`, item.id]);
+    const id = await this.board.pick("Что взять у ЦБ?", pairs);
+    if (id === null) return;
+    const item = this.db.funding[id];
+    const details = [`+${item.liquidity} баланса сейчас`, `платёж ${this.fundingRate(id)} каждый раунд`, item.note || ""];
+    if (id === "deposits" && this.db.cbDecision(this.state.round_number, this.state).free_first_deposit) details.push("первая карта вкладов в этом раунде обслуживается бесплатно");
+    if (!await this.board.confirm(`Взять «${item.name}»?`, details)) return;
     let freeRound = 0;
-    if (fid === "deposits"
-        && db.cbDecision(s.round_number).free_first_deposit
-        && !(s.deposit_free_used[team.name])) {
-      freeRound = s.round_number;
-      s.deposit_free_used[team.name] = true;
+    if (id === "deposits" && this.db.cbDecision(this.state.round_number, this.state).free_first_deposit && !this.state.deposit_free_used[team.name]) {
+      freeRound = this.state.round_number;
+      this.state.deposit_free_used[team.name] = true;
     }
-    const inst = {
-      uid: s.allocUid(),
-      card_id: fid,
-      rounds_left: c.term ?? null,
-      free_round: freeRound,
-    };
-    team.funding.push(inst);
-    team.liquidity += c.liquidity;
-    const freeTxt = freeRound ? " (в этом раунде обслуживание бесплатное)" : "";
-    ui.log(`${team.name}: взял «${c.name}» → +${c.liquidity} очков${freeTxt}.`, s);
+    team.funding.push({ uid: this.state.allocUid(), card_id: id, rounds_left: item.term, free_round: freeRound });
+    team.liquidity += item.liquidity;
+    this.board.refresh(team);
+    this.ui.log(`${team.name}: взял «${item.name}» → +${item.liquidity}.`, this.state);
   }
 
-  async fundingBuy(team) {
-    const s = this.state, db = this.db, ui = this.ui;
-    const options = [];
-    if (s.round_number >= db.bank_types.commercial.min_round && team.bank_type === "base") {
-      for (const bid of ["commercial", "investment", "ecosystem"]) {
-        const b = db.bank_types[bid];
-        options.push([`Специализация «${b.name}» — ${b.price} очков`, ["spec", bid]]);
+  async buyUpgrade(team) {
+    if (team.hasPenaltyCredit()) return this.board.info("Штрафной кредит блокирует покупку улучшений.");
+    const pairs = [];
+    if (team.bank_type === "base" && this.state.round_number >= this.db.bank_types.commercial.min_round) {
+      for (const id of ["commercial", "investment", "ecosystem"]) {
+        const bank = this.db.bank_types[id];
+        pairs.push([`Специализация «${bank.name}» · ${bank.price}`, ["bank", id]]);
       }
     }
-    if (team.improvements.length < 3 && !team.hasPenaltyCredit) {
-      for (const [iid, imp] of Object.entries(db.improvements)) {
-        if (team.improvements.includes(iid)) continue;
-        options.push([`Улучшение «${imp.name}» — ${imp.price} очков`, ["imp", iid]]);
+    if (team.improvements.length < 3) {
+      for (const [id, item] of Object.entries(this.db.improvements)) {
+        if (!team.improvements.includes(id)) pairs.push([`Улучшение «${item.name}» · ${item.price}`, ["upgrade", id]]);
       }
     }
-    if (!options.length) {
-      await this.infoBack("Покупать нечего (или запрещено штрафным кредитом ЦБ).");
-      return;
-    }
-    const picked = await this.pick("Что купить", options);
-    if (picked === null) return;
-    const [action, payload] = picked;
-
-    if (action === "spec") {
-      const b = db.bank_types[payload];
-      const details = [
-        `цена: ${b.price} очков баланса`,
-        b.note || "",
-        `слабое место: ${b.weak || "—"}`,
-        "меняется один раз за игру",
-      ];
-      if (!(await this.confirmOrCancel(`Стать банком «${b.name}»?`, details))) return;
-      if (!this.hasLiquidity(team, b.price)) return;
-      team.liquidity -= b.price;
-      team.bank_type = payload;
-      ui.log(`${team.name}: специализация «${b.name}» (−${b.price}).`, s);
-    } else if (action === "imp") {
-      const imp = db.improvements[payload];
-      const details = [`цена: ${imp.price} очков баланса`, imp.note || ""];
-      if (!(await this.confirmOrCancel(`Купить «${imp.name}»?`, details))) return;
-      if (!this.hasLiquidity(team, imp.price)) return;
-      team.liquidity -= imp.price;
-      team.improvements.push(payload);
-      ui.log(`${team.name}: куплено улучшение «${imp.name}» (−${imp.price}).`, s);
-    }
+    if (!pairs.length) return this.board.info("Доступных покупок нет.");
+    const selected = await this.board.pick("Что купить?", pairs);
+    if (!selected) return;
+    const [kind, id] = selected;
+    const item = kind === "bank" ? this.db.bank_types[id] : this.db.improvements[id];
+    if (!await this.board.confirm(`Купить «${item.name}»?`, [`цена: ${item.price} баланса`, item.note || ""])) return;
+    if (team.liquidity < item.price) return this.board.info(`Недостаточно баланса: нужно ${item.price}, есть ${team.liquidity}.`);
+    team.liquidity -= item.price;
+    if (kind === "bank") team.bank_type = id;
+    else team.improvements.push(id);
+    this.board.refresh(team);
+    this.ui.log(`${team.name}: куплено «${item.name}» (−${item.price}).`, this.state);
   }
 
-  async fundingReturn(team) {
-    /** Возврат долгов в ЦБ — вклады, МБК и штрафные кредиты (info.md, ШАГ 2). */
-    const s = this.state, db = this.db, ui = this.ui;
-    const options = [];
-    for (const f of team.funding) {
-      if (RETURNABLE_FUNDING.includes(f.card_id)) {
-        const c = db.funding[f.card_id];
-        options.push([`Вернуть «${c.name}» в ЦБ (отдать ${c.liquidity})`, f.uid]);
-      }
-    }
-    if (!options.length) {
-      await this.infoBack("Возвращать нечего.");
-      return;
-    }
-    const uid = await this.pick("Что вернуть в ЦБ", options);
+  async returnFunding(team) {
+    const pairs = team.funding.filter((item) => RETURNABLE_FUNDING.includes(item.card_id)).map((item) => [
+      `Вернуть «${this.db.funding[item.card_id].name}» · −${this.db.funding[item.card_id].liquidity}`,
+      item.uid,
+    ]);
+    const uid = await this.board.pick("Какой долг вернуть?", pairs);
     if (uid === null) return;
-
-    const inst = team.fundingByUid(uid);
-    if (!inst) {
-      this.ui.note("Карта не найдена.");
-      return;
-    }
-    const c = db.funding[inst.card_id];
-    const details = [
-      `отдать нужно ${c.liquidity} очков`,
-      "карта уходит из списка долгов, платёж по ней прекращается",
-    ];
-    if (!(await this.confirmOrCancel(`Вернуть «${c.name}» в ЦБ?`, details))) return;
-    if (!this.hasLiquidity(team, c.liquidity)) return;
-    team.liquidity -= c.liquidity;
-    const i = team.funding.indexOf(inst);
-    if (i >= 0) team.funding.splice(i, 1);
-    ui.log(`${team.name}: вернул «${c.name}» в ЦБ (−${c.liquidity}).`, s);
+    const instance = team.fundingByUid(uid);
+    const item = this.db.funding[instance.card_id];
+    if (!await this.board.confirm(`Вернуть «${item.name}»?`, [`отдать ${item.liquidity} баланса`, "платёж по карте прекращается"])) return;
+    if (team.liquidity < item.liquidity) return this.board.info("Недостаточно баланса для возврата.");
+    team.liquidity -= item.liquidity;
+    team.funding = team.funding.filter((entry) => entry.uid !== uid);
+    this.board.refresh(team);
+    this.ui.log(`${team.name}: вернул «${item.name}».`, this.state);
   }
 
-  // ====== ШАГ 3: гласный аукцион (тайные ставки) ======
+  lotContext(card, extra = "", bids = null) {
+    this.ui.clear();
+    this.ui.header(this.state, this.db, this.board.title(2, "Торги · карточка сделки"));
+    this.ui.showAuctionCard(card, this.db, extra, bids);
+    this.ui.showStatus(this.state, this.db);
+  }
 
-  async phaseAuctionLot() {
-    const s = this.state, db = this.db, ui = this.ui;
-    if (!s.market_lots.length) {
-      s.phase = "auction_free";
-      s.turn_team = 0;
-      return;
+  bidReason(team, card) {
+    if (team.deals.some((deal) => deal.card_id === card.id)) return "такая сделка уже есть";
+    if (!allowedDeal(team, card, this.db)) return "недоступно для типа банка";
+    if (team.deals.length >= conveyorLimit(team, this.db)) return "конвейер сделок заполнен";
+    const price = dealPrice(team, card, this.db);
+    if (team.liquidity < price) return `не хватает баланса (нужно ${price})`;
+    if (!canAddRisk(team, card.risk, this.db)) return `риск превышает норматив (предел ${riskLimit(team, this.db)})`;
+    if (!team.bid_hand.length) return "нет карточек скидки";
+    return null;
+  }
+
+  async auctionStep() {
+    while (this.state.market_lots.length) {
+      await this.auctionLot(this.state.market_lots.shift());
     }
+    const actions = [
+      { label: "Взять сделку у ЦБ без торгов", run: (team) => this.takeFreeDeal(team) },
+      this.board.finishAction(),
+    ];
+    await this.board.turnLoop(3, "Сделки у ЦБ без торгов", actions, "Что взять после торгов?");
+    this.state.phase = "settlement";
+  }
 
-    const cid = s.market_lots[0];
-    const card = db.deals[cid];
-    const net = dealNet(card);
-
-    const lotBanner = (extra = null) => {
-      ui.clear();
-      ui.header(s, db, `${this.stepLabel(3)} — Тайная ставка за сделку`);
-      ui.clearNotes();
-      ui.note(`Торгуется: ${card.name} — вложить ${card.body}, ${kindStr(card)}, `
-        + `риск ${card.risk} (чистый доход +${net})`);
-      const req = proRequirement(card, db);
-      if (req) ui.note(`Только для: ${req}`);
-      if (extra) ui.note(extra);
-    };
-
-    // тайные ставки
-    const bids = []; // {team, bid|null, reason|null}
-    for (const team of s.teams) {
-      let reason = this.bidRejectionReason(team, card);
-      if (!reason && !team.bid_hand.length) reason = "нет свободных карточек скидки";
-      lotBanner(reason ? `Статус ${team.name}: ${reason}` : null);
-      ui.showTable(team, s, db);
-      if (reason) {
+  async auctionLot(id) {
+    const card = this.db.deals[id];
+    const bids = [];
+    for (const team of this.state.teams) {
+      const reason = this.bidReason(team, card);
+      this.lotContext(card, reason ? `${team.name}: ${reason}` : `${team.name}: решение команды`);
+      this.ui.showTable(team, this.state, this.db);
+      if (reason || !(await this.ui.askYesNo(`${team.name}: участвовать в торгах?`, false))) {
         bids.push({ team, bid: null, reason });
         continue;
       }
-      if (await ui.askYesNo(`${team.name}: участвует в торгах за «${card.name}»?`, false)) {
-        const opts = [...team.bid_hand].sort((a, b) => a - b).map((v) => ({
-          label: `карточка скидки ${v} → получите +${net + v}`,
-          value: v,
-        }));
-        const idx = await ui.askChoice(`${team.name}: какую карточку скидку поставить?`, opts);
-        const bid = opts[idx].value;
-        const hi = team.bid_hand.indexOf(bid);
-        if (hi >= 0) {
-          team.bid_hand.splice(hi, 1);
-          // карточка сгорает до конца раунда и вернётся в phaseRoundEnd
-          team.bid_used.push(bid);
-        }
+      const pairs = [...team.bid_hand].sort((a, b) => a - b).map((value) => [`Скидка ${value} · доход +${dealNet(card) + value}`, value]);
+      const bid = await this.board.pick("Какую карточку скидки поставить?", pairs);
+      if (bid === null) bids.push({ team, bid: null, reason: "пас" });
+      else {
+        team.bid_hand.splice(team.bid_hand.indexOf(bid), 1);
+        team.bid_used.push(bid);
         bids.push({ team, bid, reason: null });
-      } else {
-        bids.push({ team, bid: null, reason: null });
       }
     }
-
-    // вскрытие: одинаковые статусы группируем, без повторов
-    lotBanner("ВСКРЫТИЕ СТАВОК — кто победил?");
-    const groups = {};
-    const order = [];
-    for (const b of bids) {
-      let key;
-      if (b.bid !== null) key = `ставка ${b.bid}`;
-      else key = b.reason ? `пас — ${b.reason}` : "пас";
-      if (!(key in groups)) {
-        groups[key] = [];
-        order.push(key);
-      }
-      groups[key].push(b.team.name);
+    this.lotContext(card, "Вскрытие ставок", bids);
+    const groups = new Map();
+    for (const item of bids) {
+      const key = item.bid === null ? `пас${item.reason ? ` — ${item.reason}` : ""}` : `ставка ${item.bid}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item.team.name);
     }
-    for (const key of order) ui.note(`${groups[key].join(", ")}: ${key}`);
-
-    const contenders = bids.filter((b) => b.bid !== null).map((b) => [b.team, b.bid]);
+    for (const [key, names] of groups) this.ui.note(`${names.join(", ")}: ${key}`);
+    const contenders = bids.filter((item) => item.bid !== null);
     if (!contenders.length) {
-      ui.log(`За лот «${card.name}» никто не боролся — карта уходит в сброс.`, s);
-      s.discard.push(cid);
-      s.market_lots.shift();
-      await ui.pause();
-      return;
+      this.state.discard.push(id);
+      this.ui.log(`За «${card.name}» никто не боролся.`, this.state);
+      return this.board.pause();
     }
-
-    // победитель: самая большая скидка, ничья → меньше Риск → кубик
-    contenders.sort((a, b) => (a[1] - b[1]) || (totalRisk(a[0], db) - totalRisk(b[0], db)));
-    let winner = contenders[0][0];
-    let winBid = contenders[0][1];
-    let ties = contenders.filter((c) => c[1] === winBid);
-    if (ties.length > 1) {
-      const minRisk = Math.min(...ties.map((c) => totalRisk(c[0], db)));
-      ties = ties.filter((c) => totalRisk(c[0], db) === minRisk);
-    }
-    if (ties.length > 1) {
-      ui.note("Полная ничья — кубик решает!");
-      const roll = await ui.throwDice();
-      const pair = roll % 2 ? ties[0] : ties[1];
-      winner = pair[0];
-      winBid = pair[1];
-    }
-
-    this.takeDeal(winner, cid, winBid);
-    ui.log(`${winner.name} побеждает в торгах за «${card.name}» со скидкой ${winBid}!`, s);
-    ui.note("Использованные карточки скидки вернутся в руку в следующем раунде.");
-    s.market_lots.shift();
-    await ui.pause();
+    contenders.sort((a, b) => b.bid - a.bid || totalRisk(a.team, this.db) - totalRisk(b.team, this.db));
+    let finalists = contenders.filter((item) => item.bid === contenders[0].bid);
+    const minRisk = Math.min(...finalists.map((item) => totalRisk(item.team, this.db)));
+    finalists = finalists.filter((item) => totalRisk(item.team, this.db) === minRisk);
+    let winner = finalists[0];
+    if (finalists.length > 1) winner = finalists[(await this.ui.throwDice()) % finalists.length];
+    this.takeDeal(winner.team, id, winner.bid);
+    this.ui.note(`Победитель: ${winner.team.name}, скидка ${winner.bid}.`);
+    await this.board.pause();
   }
 
-  bidRejectionReason(team, card) {
-    const db = this.db;
-    if (team.deals.some((d) => d.card_id === card.id)) return "такая сделка уже есть у команды";
-    if (!allowedDeal(team, card, db)) return "сделка недоступна по Типу Банка";
-    if (team.deals.length >= conveyorLimit(team, db)) {
-      return `мест для сделок уже занято (${conveyorLimit(team, db)})`;
-    }
-    const price = this.dealPrice(team, card);
-    if (team.liquidity < price) {
-      return `не хватает Баланса (нужно ${price}, есть ${team.liquidity})`;
-    }
-    if (!canAddRisk(team, card.risk, db)) {
-      return `норматив ЦБ: Риск ${totalRisk(team, db)} + ${card.risk} > предел ${riskLimit(team, db)}`;
-    }
+  takeDeal(team, id, bid) {
+    const card = this.db.deals[id];
+    const price = dealPrice(team, card, this.db);
+    team.liquidity -= price;
+    team.deals.push({ uid: this.state.allocUid(), card_id: id, column: Math.min(3, Math.max(1, card.term)), discount: bid, discount_used: false });
+    this.board.refresh(team);
+    this.ui.log(`${team.name}: взял «${card.name}», уплачено ${price}.`, this.state);
+  }
+
+  freeReason(team, card) {
+    if (team.deals.some((deal) => deal.card_id === card.id)) return "такая сделка уже есть";
+    if (!allowedDeal(team, card, this.db)) return "недоступно для типа банка";
+    if (team.deals.length >= conveyorLimit(team, this.db)) return "конвейер заполнен";
+    if (team.liquidity < dealPrice(team, card, this.db)) return "не хватает баланса";
+    if (!canAddRisk(team, card.risk, this.db)) return "не хватает норматива риска";
     return null;
   }
 
-  dealPrice(team, card) {
-    let price = card.body;
-    const bank = this.db.bank_types[team.bank_type];
-    if (card.pro === "invest") price -= bank.invest_body_discount || 0;
-    return Math.max(0, price);
-  }
-
-  takeDeal(team, cid, bid) {
-    /** Карточка скидки уже сгорела на торгах (bid_used) до конца раунда. */
-    const s = this.state, db = this.db, ui = this.ui;
-    const card = db.deals[cid];
-    const price = this.dealPrice(team, card);
-    team.liquidity -= price;
-    if (price !== card.body) {
-      ui.log(`${team.name}: комиссия организатора — тело ${card.body} со скидкой `
-        + `${card.body - price}, уплачено ${price}.`, s);
-    }
-    const inst = {
-      uid: s.allocUid(),
-      card_id: cid,
-      column: Math.min(3, Math.max(1, card.term)),
-      discount: bid,
-      discount_used: false,
-    };
-    team.deals.push(inst);
-    ui.log(`${team.name}: сделка «${card.name}» взята, осталось ${card.term} р., `
-      + `уплачено ${price}, риск +${card.risk}.`, s);
-  }
-
-  // ====== ШАГ 3б: бесплатные сделки у ЦБ ======
-
-  async phaseFreeTake() {
-    const s = this.state, ui = this.ui;
-    if (s.turn_team >= s.teams.length) {
-      s.phase = "settlement";
-      return;
-    }
-
-    const team = s.teams[s.turn_team];
-    this.drawTeamTurn(team, `${this.stepLabel(3)} — Бесплатные сделки у ЦБ (без торгов)`);
-    // статусы доступности — прямо под карточкой команды
-    for (const [cid, count] of Object.entries(s.free_pool)) {
+  async takeFreeDeal(team) {
+    const pairs = [];
+    for (const [id, count] of Object.entries(this.state.free_pool)) {
       if (count <= 0) continue;
-      const card = this.db.deals[cid];
-      const reason = this.freeTakeReason(team, card);
-      if (reason) this.ui.note(`«${card.name}» — ${reason}`);
+      const card = this.db.deals[id];
+      if (!this.freeReason(team, card)) pairs.push([`${card.name} · ${dealPrice(team, card, this.db)} баланса`, id]);
     }
-    if (!Object.values(s.free_pool).some((n) => n > 0)) {
-      this.ui.note("Пул бесплатных сделок пуст.");
-    }
-    const tabs = [
-      ["Взять бесплатную сделку у ЦБ", "tab_take"],
-      ["Завершить ход — дальше", "do_done"],
-    ];
-    const idx = await ui.askChoice(`Ход ${team.name}: что делаем`, this._opts(tabs));
-    const tab = tabs[idx][1];
-
-    if (tab === "do_done") {
-      if (await ui.askYesNo(`Завершить ход ${team.name}?`, true)) s.turn_team += 1;
-      return;
-    }
-
-    await this.freeTakePick(team);
-  }
-
-  freeTakeReason(team, card) {
-    /** Почему команде нельзя взять бесплатную сделку (или null — можно). */
-    const s = this.state, db = this.db;
-    if (team.deals.some((d) => d.card_id === card.id)) return "такая сделка уже есть у команды";
-    if (!allowedDeal(team, card, db)) return "сделка недоступна по Типу Банка";
-    if (team.deals.length >= conveyorLimit(team, db)) {
-      return `конвейер заполнен (${conveyorLimit(team, db)} сделок)`;
-    }
-    const price = this.dealPrice(team, card);
-    if (team.liquidity < price) return `не хватает денег (нужно ${price}, есть ${team.liquidity})`;
-    if (!canAddRisk(team, card.risk, db)) {
-      return `не хватает запаса по Риску (${totalRisk(team, db)} + ${card.risk} > ${riskLimit(team, db)})`;
-    }
-    return null;
-  }
-
-  async freeTakePick(team) {
-    /** Меню выбора бесплатной сделки; если брать нечего — экран с пояснениями. */
-    const s = this.state, db = this.db, ui = this.ui;
-    const options = [];
-    const reasons = [];
-    for (const [cid, count] of Object.entries(s.free_pool)) {
-      if (count <= 0) continue;
-      const card = db.deals[cid];
-      const reason = this.freeTakeReason(team, card);
-      if (reason) {
-        reasons.push(`«${card.name}»: ${reason}.`);
-        continue;
-      }
-      const price = this.dealPrice(team, card);
-      options.push([`${card.name} — уплатить ${price}`, cid]);
-    }
-    if (!options.length) {
-      await this.infoBack(...reasons, "Взять нечего.");
-      return;
-    }
-    const cid = await this.pick("Какую сделку взять", options);
-    if (cid === null) return;
-
-    const card = db.deals[cid];
-    const price = this.dealPrice(team, card);
-    const net = dealNet(card);
-    const details = [
-      `заплатить сейчас: ${price} очков`,
-      `чистый доход +${net}`,
-      `срок: ${card.term} р.`,
-      kindStr(card),
-      `риск ${card.risk} очков (проверка кубиком в конце срока)`,
-    ];
-    if (!(await this.confirmOrCancel(`Взять «${card.name}»?`, details))) return;
-
-    s.free_pool[cid] -= 1;
-    const inst = {
-      uid: s.allocUid(),
-      card_id: cid,
-      column: Math.min(3, Math.max(1, card.term)),
-      discount: null,
-      discount_used: true,
-    };
+    if (!pairs.length) return this.board.info("Доступных сделок у ЦБ нет.");
+    const id = await this.board.pick("Какую сделку взять?", pairs);
+    if (id === null) return;
+    const card = this.db.deals[id];
+    const price = dealPrice(team, card, this.db);
+    if (!await this.board.confirm(`Взять «${card.name}»?`, [`заплатить ${price} баланса`, kindStr(card), `риск ${card.risk}`])) return;
+    this.state.free_pool[id] -= 1;
     team.liquidity -= price;
-    team.deals.push(inst);
-    ui.log(`${team.name}: взял у ЦБ «${card.name}» за ${price} `
-      + `(осталось ${card.term} р.).`, s);
+    team.deals.push({ uid: this.state.allocUid(), card_id: id, column: Math.min(3, Math.max(1, card.term)), discount: null, discount_used: true });
+    this.board.refresh(team);
+    this.ui.log(`${team.name}: взял у ЦБ «${card.name}».`, this.state);
   }
 
-  // ====== ШАГ 4: расчёты, кубик, сдвиг конвейера ======
+  async settlementStep() {
+    this.board.desk(4, "Расчёты · платежи и доходы");
+    this.payFixedCosts();
+    this.payFunding();
+    this.payDealIncome();
+    this.applyBonuses();
+    await this.closeExpiredDeals();
+    this.shiftDeals();
+    await this.resolveFundingTerms();
+    await this.exchangeCapital();
+    this.applyRevision();
+    this.board.desk(4, `Расчёты · раунд ${this.state.round_number} завершены`, false);
+    this.ui.note(`Раунд ${this.state.round_number} завершён.`);
+    await this.board.pause("Завершить расчёты");
+    this.state.phase = this.state.round_number === 5 ? "stress" : "round_end";
+  }
 
-  async phaseSettlement() {
-    const s = this.state, db = this.db, ui = this.ui;
-    ui.clear();
-    ui.header(s, db, `${this.stepLabel(4)} — Платежи, доходы, кубик и сдвиг сделок`);
-
-    for (const t of s.teams) {
-      const need = monthlyCost(t, db);
-      ui.log(`${t.name}: обязательный расход по Типу Банка = ${need}.`, s);
-      this.pay(t, need);
+  payFixedCosts() {
+    for (const team of this.state.teams) {
+      const amount = monthlyCost(team, this.db);
+      this.pay(team, amount);
+      this.ui.log(`${team.name}: расход банка −${amount}.`, this.state);
     }
+  }
 
-    for (const t of s.teams) {
-      for (const f of [...t.funding]) {
-        const c = db.funding[f.card_id];
-        const per = c.per_round;
-        let amount = per === "key_rate" ? db.mbkRate(s.round_number, s.active_stress) : per;
-        const bank = db.bank_types[t.bank_type];
-        if (f.card_id === "deposits") {
-          amount = bank.deposit_cost ?? per;
-          if (f.free_round === s.round_number) amount = 0;
-        }
-        if (amount === 0) {
-          ui.log(`${t.name}: «${c.name}» обслуживается бесплатно в этом раунде.`, s);
-          continue;
-        }
-        ui.log(`${t.name}: платёж по «${c.name}» = ${amount}.`, s);
-        this.pay(t, amount);
+  payFunding() {
+    for (const team of this.state.teams) {
+      for (const funding of [...team.funding]) {
+        const item = this.db.funding[funding.card_id];
+        let amount = funding.card_id === "mbk" ? this.db.mbkRate(this.state.round_number, this.state.active_stress, this.state) : item.per_round;
+        if (funding.card_id === "deposits") amount = this.db.bank_types[team.bank_type].deposit_cost ?? item.per_round;
+        if (funding.free_round === this.state.round_number) amount = 0;
+        if (amount) this.pay(team, amount);
+        this.ui.log(`${team.name}: платёж по «${item.name}» −${amount}.`, this.state);
       }
     }
+  }
 
-    for (const t of s.teams) {
-      for (let d of [...t.deals]) {
-        const card = db.deals[d.card_id];
+  payDealIncome() {
+    const decision = this.db.cbDecision(this.state.round_number, this.state);
+    for (const team of this.state.teams) {
+      for (const deal of team.deals) {
+        const card = this.db.deals[deal.card_id];
         if (card.kind !== "A") continue;
-        let amount = card.income;
-        const dec = db.cbDecision(s.round_number);
-        if (card.id === "free_ofz" && "ofz_bonus" in dec) amount = dec.ofz_bonus;
-        if (dec.subsidy_sectors && dec.subsidy_sectors.includes(card.sector)) {
-          amount += dec.subsidy_amount;
-          ui.log(`${t.name}: субсидия ЦБ за сектор ${card.sector} +${dec.subsidy_amount}.`, s);
-        }
-        if (!d.discount_used) {
-          amount += d.discount;
-          d = this.applyDiscount(t, d);
-        }
-        t.liquidity += Math.max(0, amount);
-        ui.log(`${t.name}: доход по «${card.name}» = ${Math.max(0, amount)}.`, s);
+        let income = card.id === "free_ofz" && decision.ofz_bonus !== undefined ? decision.ofz_bonus : card.income;
+        if ((decision.subsidy_sectors || []).includes(card.sector)) income += decision.subsidy_amount;
+        if (!deal.discount_used) { income += deal.discount || 0; deal.discount_used = true; }
+        team.liquidity += Math.max(0, income);
+        this.ui.log(`${team.name}: доход по «${card.name}» +${Math.max(0, income)}.`, this.state);
       }
-    }
-
-    for (const t of s.teams) {
-      const bank = db.bank_types[t.bank_type];
-      if (bank.per_deal_income) {
-        const bonus = bank.per_deal_income * t.deals.length;
-        if (bonus) {
-          t.liquidity += bonus;
-          ui.log(`${t.name}: доход экосистемы +${bonus} (за ${t.deals.length} сделок).`, s);
-        }
-      }
-      if (t.hasImprovement("mobile_app")) {
-        t.liquidity += 1;
-        ui.log(`${t.name}: «Мобильное Приложение» +1.`, s);
-      }
-    }
-
-    ui.clear();
-    ui.header(s, db, `${this.stepLabel(4)} — Проверка сделок кубиком (конец срока)`);
-    for (const t of s.teams) {
-      for (const d of [...t.deals]) {
-        if (d.column === 1) await this.closeDeal(t, d);
-      }
-    }
-
-    for (const t of s.teams) {
-      for (const d of t.deals) {
-        if (d.column > 1) d.column -= 1;
-      }
-      if (t.deals.length) {
-        ui.log(`${t.name}: сделки подвинулись → ` + t.deals
-          .map((x) => `${db.deals[x.card_id].name} (осталось ${x.column} р.)`)
-          .join(", "), s);
-      }
-    }
-
-    for (const t of s.teams) {
-      for (const f of [...t.funding]) {
-        if (f.card_id === "mbk") {
-          await this.resolveMbk(t, f);
-        } else if (f.card_id === "bonds" && f.rounds_left !== null && f.rounds_left !== undefined) {
-          f.rounds_left -= 1;
-          if (f.rounds_left <= 0) await this.repayFunding(t, f);
-        }
-      }
-    }
-
-    for (const t of s.teams) await this.capitalExchange(t);
-
-    const dec = db.cbDecision(s.round_number);
-    if ("revision_min_gap" in dec) {
-      for (const t of s.teams) {
-        const gap = t.capital - totalRisk(t, db);
-        if (gap < dec.revision_min_gap) {
-          ui.log(`${t.name}: запас Риск↔Капитал = ${gap} < ${dec.revision_min_gap} — `
-            + `предписание, платит ${dec.revision_penalty}.`, s);
-          this.pay(t, dec.revision_penalty);
-        }
-      }
-    }
-
-    ui.showStatus(s, db);
-    ui.log(`Раунд ${s.round_number} завершён.`, s);
-    await ui.pause();
-
-    s.phase = s.round_number === 5 ? "stress" : "round_end";
-  }
-
-  applyDiscount(team, deal) {
-    /** Отмечает скидку использованной. Сама карточка уже сгорела на торгах. */
-    const fresh = { ...deal, discount_used: true };
-    team.deals = team.deals.map((x) => (x.uid === deal.uid ? fresh : x));
-    return fresh;
-  }
-
-  async resolveMbk(team, inst) {
-    const s = this.state, db = this.db, ui = this.ui;
-    const rate = db.mbkRate(s.round_number, s.active_stress);
-    this.drawTeamTurn(team, `${this.stepLabel(4)} — Займ МБК (${team.name})`);
-    ui.note(`«${team.name}», МБК: продлить (платёж ${rate}) или вернуть 10 очков?`);
-    const options = [["Продлить МБК", "extend"], ["Вернуть 10 очков", "return"]];
-    const idx = await ui.askChoice("МБК: что делаем", this._opts(options));
-    const act = options[idx][1];
-    if (act === "extend") {
-      this.pay(team, rate);
-      ui.log(`${team.name}: МБК продлен за ${rate}.`, s);
-    } else {
-      if (team.liquidity < 10) {
-        ui.log(`${team.name}: не хватает на возврат МБК — недостающее списано.`, s);
-      }
-      await this.repayFunding(team, inst);
     }
   }
 
-  async repayFunding(team, inst) {
-    const s = this.state, db = this.db, ui = this.ui;
-    const c = db.funding[inst.card_id];
-    const need = c.liquidity;
-    this.pay(team, need);
-    const i = team.funding.indexOf(inst);
-    if (i >= 0) team.funding.splice(i, 1);
-    ui.log(`${team.name}: «${c.name}» погашен (−${need}).`, s);
+  applyBonuses() {
+    for (const team of this.state.teams) {
+      const bank = this.db.bank_types[team.bank_type];
+      if (bank.per_deal_income) team.liquidity += bank.per_deal_income * team.deals.length;
+      if (team.hasImprovement("mobile_app")) team.liquidity += 1;
+    }
   }
 
-  async capitalExchange(team) {
-    const s = this.state, db = this.db, ui = this.ui;
-    const rate = db.capital_exchange_rate;
-    const maxPairs = Math.floor(team.liquidity / rate);
-    const limit = db.capital_exchange_max_per_round;
-    const already = team.capital_exchanged_this_round || 0;
-    const remaining = limit == null
-      ? maxPairs
-      : Math.min(maxPairs, Math.max(0, limit - already));
-    if (remaining <= 0) {
-      ui.note(`Лимит обмена прибыли на капитал в этом раунде исчерпан (${already} из ${limit} пар).`);
-      return;
+  async closeExpiredDeals() {
+    for (const team of this.state.teams) {
+      for (const deal of [...team.deals]) {
+        if (deal.column === 1) await this.closeDeal(team, deal);
+      }
     }
-    this.drawTeamTurn(team, `${this.stepLabel(4)} — Обмен прибыли на капитал (${team.name})`);
-    ui.note(`${rate} баланса → 1 капитал, доступно пар: ${remaining}`);
-    const act = await this.pick("Обмен прибыли на Капитал", [
-      ["Обменять прибыль на Капитал", "yes"],
-    ], "Завершить ход — дальше");
-    if (act === null) return;
-    if (act !== "yes") return;
-    const pairs = await ui.askInt(`Сколько обменять (${rate} баланса → 1 капитал)`, 1, remaining);
-    const cost = pairs * rate;
-    const pairsGot = pairs;
-    if (!(await this.confirmOrCancel(`Обменять ${cost} Баланса на ${pairsGot} Капитала?`, [
-      `курс: ${rate} баланса → 1 капитал`,
-      `после обмена: баланс ${team.liquidity - cost}, капитал ${team.capital + pairsGot}`,
-    ]))) return;
-    team.liquidity -= cost;
-    team.capital += pairsGot;
-    team.capital_exchanged_this_round = already + pairsGot;
-    ui.log(`${team.name}: обменял ${cost} Баланса на ${pairsGot} Капитала.`, s);
   }
-
-  // ====== деньги ======
-
-  pay(team, amount) {
-    /** Уплата в ЦБ: при нехватке — штрафной кредит, в последнюю очередь — Капитал. */
-    const s = this.state, db = this.db, ui = this.ui;
-    if (amount <= 0) return;
-    if (team.liquidity >= amount) {
-      team.liquidity -= amount;
-      return;
-    }
-    let guard = 0;
-    while (team.liquidity < amount && guard < 5) {
-      guard += 1;
-      const inst = this.penaltyFunding(team);
-      if (!inst) break;
-      team.funding.push(inst);
-      team.liquidity += db.funding.penalty_credit.liquidity;
-      ui.log(`${team.name}: НЕХВАТКА! ЦБ выдал «Штрафной кредит ЦБ» → +10 очков `
-        + "(ставка 4/р., блокирует покупку Улучшений).", s);
-    }
-    if (team.liquidity >= amount) {
-      team.liquidity -= amount;
-      return;
-    }
-    const short = amount - team.liquidity;
-    team.liquidity = 0;
-    deductCapital(team, short);
-    ui.log(`${team.name}: баланса нет — ${short} списано из Капитала 1:1.`, s);
-  }
-
-  penaltyFunding(team) {
-    const count = team.funding.filter((f) => f.card_id === "penalty_credit").length;
-    if (count >= 3 || team.funding.length >= FUNDING_SLOTS) return null;
-    return { uid: this.state.allocUid(), card_id: "penalty_credit", rounds_left: null, free_round: 0 };
-  }
-
-  // ====== закрытие сделок ======
 
   async closeDeal(team, deal) {
-    const s = this.state, db = this.db, ui = this.ui;
-    const card = db.deals[deal.card_id];
-    let failNumbers = new Set(card.default_on);
-    if (s.active_stress.includes("S1") && card.sector === "Стройка") {
-      const st = db.stress_scenarios.S1;
-      failNumbers = new Set();
-      for (let i = 1; i <= st.construction_fail; i++) failNumbers.add(i);
+    const card = this.db.deals[deal.card_id];
+    const fail = new Set(card.default_on || []);
+    if (this.state.active_stress.includes("S1") && card.sector === "Стройка") {
+      fail.clear();
+      for (let i = 1; i <= this.db.stress_scenarios.S1.construction_fail; i++) fail.add(i);
     }
-    ui.clear();
-    ui.header(s, db, `${this.stepLabel(4)} — Проверка: «${card.name}» (${team.name})`);
-    const sortedFail = [...failNumbers].sort((a, b) => a - b);
-    const failTxt = sortedFail.length ? `[${sortedFail.join(", ")}]` : "—";
-    ui.note(`Бросок кубика: дефолт на ${failTxt} (штраф -${card.default_penalty} Капитала).`);
-    const roll = await ui.throwDice();
-    const failed = failNumbers.has(roll);
-    ui.note(failed
-      ? `Кубик ${roll} — ДЕФОЛТ по «${card.name}»!`
-      : `Кубик ${roll} — успех, сделка закрывается.`);
-    await ui.pause("Далее");
-
-    if (!failed) {
-      ui.log(`${team.name}: «${card.name}» — успех (кубик ${roll})!`, s);
-      await this.finishClose(team, deal, true);
-      return;
-    }
-
-    ui.log(`${team.name}: «${card.name}» — ДЕФОЛТ! (кубик ${roll})`, s);
-    if (team.hasReserves) {
-      ui.clear();
-      ui.header(s, db, `${this.stepLabel(4)} — Спасение «Резервным Фондом»`);
-      ui.note(`${team.name}: «${card.name}» — ДЕФОЛТ (кубик ${roll}).`);
-      ui.note(`Штраф по карте: -${card.default_penalty} Капитала.`);
-      if (await ui.askYesNo(`${team.name}: сбросить карту «Резервный Фонд» вместо штрафа?`, true)) {
-        team.improvements = team.improvements.filter((x) => x !== "reserve_fund");
+    this.board.desk(4, `Проверка сделки · ${card.name}`);
+    this.ui.showTable(team, this.state, this.db);
+    this.ui.note(`Дефолт на бросках: ${[...fail].join(", ") || "нет"}. Штраф −${card.default_penalty} капитала.`);
+    const roll = await this.ui.throwDice();
+    const failed = fail.has(roll);
+    if (failed && team.hasReserves()) {
+      if (await this.ui.askYesNo(`${team.name}: использовать Резервный фонд?`, true)) {
+        team.improvements = team.improvements.filter((id) => id !== "reserve_fund");
         team.reserve_used = true;
-        ui.log(`${team.name}: «Резервный Фонд» спас от штрафа по «${card.name}».`, s);
-        await this.finishClose(team, deal, true);
-        return;
+        this.ui.log(`${team.name}: Резервный фонд спас от дефолта.`, this.state);
+        return this.finishDeal(team, deal, true);
       }
     }
-    const penalty = card.default_penalty;
-    deductCapital(team, penalty);
-    ui.log(`${team.name}: дефолт по «${card.name}» (кубик ${roll}), `
-      + `списано ${penalty} Капитала.`, s);
-    if (card.kind === "B") ui.log(`${team.name}: доход по «${card.name}» = 0.`, s);
-    await this.finishClose(team, deal, false);
+    if (failed) deductCapital(team, card.default_penalty);
+    await this.finishDeal(team, deal, !failed);
   }
 
-  async finishClose(team, deal, success) {
-    const s = this.state, db = this.db, ui = this.ui;
-    const card = db.deals[deal.card_id];
-    let paid = card.body;
-    if (card.pro === "invest") {
-      const bonus = db.bank_types[team.bank_type].invest_close_bonus ?? 0;
-      paid += bonus;
-      if (bonus) ui.log(`${team.name}: комиссия организатора при закрытии +${bonus}.`, s);
-    }
-
+  finishDeal(team, deal, success) {
+    const card = this.db.deals[deal.card_id];
+    let returned = card.body;
+    if (card.pro === "invest") returned += this.db.bank_types[team.bank_type].invest_close_bonus || 0;
     let income = 0;
     if (success && card.kind === "B") {
-      income = card.payoff;
-      if (!deal.discount_used) {
-        income = Math.max(0, income + deal.discount);
-        deal.discount_used = true;
-      }
-      if (card.pro === "invest" && s.round_number === 6 && s.active_stress.includes("S3")) {
-        const penalty = db.stress_scenarios.S3.invest_income_penalty;
-        income = Math.max(0, income - penalty);
-        ui.log(`${team.name}: стресс «Кризис баланса» — куш по `
-          + `«${card.name}» уменьшен на ${penalty}.`, s);
-      }
+      income = card.payoff + (deal.discount_used ? 0 : deal.discount || 0);
+      if (card.pro === "invest" && this.state.round_number === 6 && this.state.active_stress.includes("S3")) income = Math.max(0, income - this.db.stress_scenarios.S3.invest_income_penalty);
     }
-
-    team.liquidity += paid + income;
-    if (income) {
-      ui.log(`${team.name}: «${card.name}» — тело ${paid} + куш ${income} возвращено.`, s);
-    } else {
-      ui.log(`${team.name}: «${card.name}» — тело ${paid} возвращено.`, s);
-    }
-
-    team.deals = team.deals.filter((d) => d.uid !== deal.uid);
-    s.discard.push(card.id);
+    team.liquidity += returned + income;
+    team.deals = team.deals.filter((item) => item.uid !== deal.uid);
+    this.state.discard.push(card.id);
+    this.ui.log(`${team.name}: «${card.name}» закрыта, возвращено ${returned}${income ? ` + доход ${income}` : ""}.`, this.state);
   }
 
-  // ====== ШАГ 5: стресс-тест и межбанковская торговля ======
-
-  async phaseStress() {
-    const s = this.state, db = this.db, ui = this.ui;
-    ui.clear();
-    ui.header(s, db, `${this.stepLabel(5)} — Стресс-тест и торговля между командами`);
-
-    if (!s.pending_stress.length) {
-      const ids = Object.keys(db.stress_scenarios);
-      shuffle(ids);
-      s.pending_stress = ids.slice(0, 2).sort();
-      ui.note("Ведущий вскрывает 2 из 3 карт Стресс-сценариев:");
-      for (const sid of s.pending_stress) {
-        const st = db.stress_scenarios[sid];
-        ui.note(`«${st.name}» — ${st.text}`);
-      }
-      ui.note("В 6-м раунде сработает ОДНА из этих угроз (выбор — жребием).");
-      while (await ui.askYesNo("Провести межбанковскую сделку сейчас?", false)) {
-        if (!(await this.interbankDeal())) break;
-      }
-      ui.showStatus(s, db);
-      await ui.pause();
+  shiftDeals() {
+    for (const team of this.state.teams) {
+      for (const deal of team.deals) if (deal.column > 1) deal.column -= 1;
     }
+  }
+
+  async resolveFundingTerms() {
+    for (const team of this.state.teams) {
+      for (const funding of [...team.funding]) {
+        if (funding.card_id === "mbk") await this.resolveMbk(team, funding);
+        if (funding.card_id === "bonds" && funding.rounds_left != null) {
+          funding.rounds_left -= 1;
+          if (funding.rounds_left <= 0) this.repayFunding(team, funding);
+        }
+      }
+    }
+  }
+
+  async resolveMbk(team, funding) {
+    const rate = this.db.mbkRate(this.state.round_number, this.state.active_stress, this.state);
+    this.board.turn(team, 4, `МБК · ${team.name}`);
+    const action = await this.board.pick("Что сделать с МБК?", [[`Продлить за ${rate}`, "extend"], ["Вернуть 10 баланса", "return"]], null);
+    if (action === "extend") this.pay(team, rate);
+    if (action === "return") this.repayFunding(team, funding);
+  }
+
+  repayFunding(team, funding) {
+    const item = this.db.funding[funding.card_id];
+    this.pay(team, item.liquidity);
+    team.funding = team.funding.filter((entry) => entry.uid !== funding.uid);
+    this.ui.log(`${team.name}: погашен долг «${item.name}».`, this.state);
+  }
+
+  async exchangeCapital() {
+    const actions = [{
+      label: (team) => `Обменять баланс на капитал (${this.db.capital_exchange_rate} → 1)`,
+      when: (team) => this.exchangeAvailable(team) > 0,
+      run: (team) => this.exchange(team),
+    }, this.board.finishAction()];
+    await this.board.turnLoop(4, "Обмен прибыли на капитал", actions, "Что сделать с прибылью?");
+  }
+
+  exchangeAvailable(team) {
+    const possible = Math.floor(team.liquidity / this.db.capital_exchange_rate);
+    const limit = this.db.capital_exchange_max_per_round;
+    return limit == null ? possible : Math.min(possible, Math.max(0, limit - team.capital_exchanged_this_round));
+  }
+
+  async exchange(team) {
+    const available = this.exchangeAvailable(team);
+    const pairs = await this.ui.askInt(`Сколько пар обменять? (доступно ${available})`, 1, available);
+    const cost = pairs * this.db.capital_exchange_rate;
+    if (!await this.board.confirm(`Обменять ${cost} баланса?`, [`получить ${pairs} капитала`, `останется баланса: ${team.liquidity - cost}`])) return false;
+    team.liquidity -= cost;
+    team.capital += pairs;
+    team.capital_exchanged_this_round += pairs;
+    this.board.refresh(team);
+    this.ui.log(`${team.name}: обменял ${cost} баланса на ${pairs} капитала.`, this.state);
+    this.ui.note(`Обмен ${cost} → +${pairs} капитала. Теперь капитал: ${team.capital}, баланс: ${team.liquidity}.`);
+    return false;
+  }
+
+  applyRevision() {
+    const decision = this.db.cbDecision(this.state.round_number, this.state);
+    if (decision.revision_min_gap == null) return;
+    for (const team of this.state.teams) {
+      if (team.capital - totalRisk(team, this.db) < decision.revision_min_gap) {
+        this.pay(team, decision.revision_penalty);
+        this.ui.log(`${team.name}: предписание ЦБ −${decision.revision_penalty}.`, this.state);
+      }
+    }
+  }
+
+  async stressStep() {
+    const s = this.state;
+    this.board.desk(5, "Стресс-тест и межбанковская торговля");
+    if (!s.pending_stress.length) {
+      s.pending_stress = Object.keys(this.db.stress_scenarios).sort(() => Math.random() - 0.5).slice(0, 2).sort();
+      this.ui.note("Вскрыты два стресс-сценария:");
+      for (const id of s.pending_stress) this.ui.note(`«${this.db.stress_scenarios[id].name}» — ${this.db.stress_scenarios[id].text}`);
+      while (await this.ui.askYesNo("Провести межбанковскую сделку?", false)) {
+        if (!await this.interbank()) break;
+      }
+    }
+    await this.board.pause("Завершить шаг 4");
     s.phase = "round_end";
   }
 
-  async interbankDeal() {
-    /** Одна продажа сделки другой команде. False — сделок нет. */
-    const s = this.state, db = this.db, ui = this.ui;
-    if (!s.teams.some((t) => t.deals.length)) {
-      ui.note("Нет сделок для межбанковской торговли.");
-      return false;
-    }
-
-    let seller, buyer;
-    if (s.teams.length === 2) {
-      // классика на две команды: продавец тот, у кого есть сделки
-      seller = s.teams[0];
-      buyer = s.teams[1];
-      if (!seller.deals.length) {
-        const tmp = seller;
-        seller = buyer;
-        buyer = tmp;
-      }
-    } else {
-      // 3+ команды: сами выбираем, кто продаёт и кто покупает
-      const sellOpts = s.teams
-        .filter((t) => t.deals.length)
-        .map((t) => [`${t.name} (сделок: ${t.deals.length})`, t.name]);
-      const sellName = await this.pick("Кто продаёт сделку?", sellOpts);
-      if (sellName === null) return false;
-      seller = s.teams.find((t) => t.name === sellName);
-
-      const buyOpts = s.teams
-        .filter((t) => t.name !== seller.name)
-        .map((t) => [`${t.name} (баланс: ${t.liquidity})`, t.name]);
-      const buyName = await this.pick(`Кто покупает у «${seller.name}»?`, buyOpts);
-      if (buyName === null) return false;
-      buyer = s.teams.find((t) => t.name === buyName);
-    }
-
-    ui.clear();
-    ui.header(s, db, `${this.stepLabel(5)} — Сделка между командами`);
-    ui.note(`Продавец: ${seller.name}, покупатель: ${buyer.name}`);
-    const options = seller.deals.map((d) => [
-      `${db.deals[d.card_id].name} (риск ${db.deals[d.card_id].risk}, осталось ${d.column} р.)`,
-      d.uid,
-    ]);
-    const uid = await this.pick("Какую сделку продать", options);
+  async interbank() {
+    const teams = this.state.teams;
+    const sellers = teams.filter((team) => team.deals.length);
+    if (!sellers.length) { await this.board.info("Нет сделок для продажи."); return false; }
+    const sellerName = teams.length === 2 ? sellers[0].name : await this.board.pick("Кто продаёт?", sellers.map((team) => [`${team.name} · сделок ${team.deals.length}`, team.name]), null);
+    if (!sellerName) return false;
+    const seller = teams.find((team) => team.name === sellerName);
+    const buyerName = teams.length === 2 ? teams.find((team) => team !== seller).name : await this.board.pick("Кто покупает?", teams.filter((team) => team !== seller).map((team) => [`${team.name} · баланс ${team.liquidity}`, team.name]), null);
+    if (!buyerName) return false;
+    const buyer = teams.find((team) => team.name === buyerName);
+    this.board.desk(5, "Межбанковская сделка");
+    this.ui.note(`Продавец: ${seller.name}. Покупатель: ${buyer.name}.`);
+    const uid = await this.board.pick("Какую сделку продать?", seller.deals.map((deal) => [this.db.deals[deal.card_id].name, deal.uid]));
     if (uid === null) return false;
     const deal = seller.dealByUid(uid);
-    let price = await ui.askInt("Цена в очках баланса", 0, buyer.liquidity);
-    price = Math.min(price, buyer.liquidity);
+    const price = await this.ui.askInt("Цена в балансе", 0, buyer.liquidity);
     seller.liquidity += price;
     buyer.liquidity -= price;
-    const i = seller.deals.indexOf(deal);
-    if (i >= 0) seller.deals.splice(i, 1);
+    seller.deals = seller.deals.filter((item) => item.uid !== uid);
     buyer.deals.push(deal);
-    ui.log(`${seller.name} продал «${db.deals[deal.card_id].name}» ${buyer.name} `
-      + `за ${price} очков. Риск перешёл покупателю.`, s);
+    this.ui.log(`${seller.name} продал «${this.db.deals[deal.card_id].name}» ${buyer.name} за ${price}.`, this.state);
+    this.board.refresh(buyer);
     return true;
   }
 
-  // ====== конец раунда ======
-
-  phaseRoundEnd() {
-    const s = this.state, db = this.db, ui = this.ui;
-    if (this.onRoundEnd) this.onRoundEnd(s);
-    // сбрасываем лимит обмена прибыли на капитал на новый раунд
-    for (const t of s.teams) t.capital_exchanged_this_round = 0;
-    // сгоревшие на торгах карточки возвращаются в руку в новом раунде
-    for (const t of s.teams) {
-      if (t.bid_used && t.bid_used.length) {
-        t.bid_hand.push(...t.bid_used);
-        t.bid_used = [];
-      }
+  endRound() {
+    if (this.save) this.save(this.state);
+    for (const team of this.state.teams) {
+      team.capital_exchanged_this_round = 0;
+      team.bid_hand.push(...team.bid_used);
+      team.bid_used = [];
     }
-    s.round_number += 1;
-    if (s.round_number > db.rounds) {
-      s.phase = "finished";
-      s.scored = false;
+    this.state.round_number += 1;
+    if (this.state.round_number > this.db.rounds) {
+      this.state.phase = "finished";
+      this.state.scored = false;
       return;
     }
-    s.market_lots = [];
-    s.turn_team = 0;
-    s.deposit_free_used = {};
-    if (s.pending_stress.length && s.round_number === 6) {
-      const c = choice(s.pending_stress);
-      s.active_stress = [c];
-      ui.log(`Жребий определил стресс-сценарий раунда 6: «${db.stress_scenarios[c].name}».`, s);
+    if (this.state.pending_stress.length && this.state.round_number === 6) {
+      this.state.active_stress = [choice(this.state.pending_stress)];
+      this.ui.log(`В раунде 6 активен сценарий «${this.db.stress_scenarios[this.state.active_stress[0]].name}».`, this.state);
     }
-    s.phase = "round_start";
+    this.state.market_lots = [];
+    this.state.turn_team = 0;
+    this.state.deposit_free_used = {};
+    this.state.phase = "round_start";
   }
 
-  // ====== финальный подсчёт ======
+  pay(team, amount) {
+    if (amount <= 0) return;
+    if (team.liquidity >= amount) { team.liquidity -= amount; return; }
+    let rest = amount - team.liquidity;
+    team.liquidity = 0;
+    while (rest > 0 && team.funding.filter((item) => item.card_id === "penalty_credit").length < 3 && team.funding.length < FUNDING_SLOTS) {
+      team.funding.push({ uid: this.state.allocUid(), card_id: "penalty_credit", rounds_left: null, free_round: 0 });
+      team.liquidity += this.db.funding.penalty_credit.liquidity;
+      rest -= this.db.funding.penalty_credit.liquidity;
+    }
+    if (rest > 0) deductCapital(team, rest);
+  }
 
   async finalCount() {
-    const s = this.state, db = this.db, ui = this.ui;
-    if (s.scored) return null;
-    ui.clear();
-    ui.header(s, db, "ФИНАЛ — Подсчёт очков");
-
-    ui.note("--- Досрочное закрытие сделок (без кубика) ---");
-    for (const t of s.teams) {
-      for (const d of [...t.deals]) {
-        const card = db.deals[d.card_id];
-        let bonus = 0;
-        if (card.pro === "invest") {
-          bonus = db.bank_types[t.bank_type].invest_close_bonus ?? 0;
-        }
-        const paid = card.body + bonus;
-        t.liquidity += paid;
-        ui.log(`${t.name}: «${card.name}» закрыта досрочно, тело ${paid} возвращено.`, s);
+    if (this.state.scored) return null;
+    this.ui.clear();
+    this.ui.header(this.state, this.db, "Финал · подсчёт очков");
+    this.ui.showStatus(this.state, this.db);
+    for (const team of this.state.teams) {
+      for (const deal of [...team.deals]) {
+        const card = this.db.deals[deal.card_id];
+        team.liquidity += card.body + (card.pro === "invest" ? this.db.bank_types[team.bank_type].invest_close_bonus || 0 : 0);
       }
-      t.deals = [];
+      team.deals = [];
+      for (const funding of [...team.funding]) this.repayFunding(team, funding);
     }
-
-    ui.note("--- Возврат долгов по Фондированию ---");
-    for (const t of s.teams) {
-      for (const f of [...t.funding]) {
-        const need = db.funding[f.card_id].liquidity;
-        if (t.liquidity >= need) {
-          t.liquidity -= need;
-        } else {
-          const short = need - t.liquidity;
-          t.liquidity = 0;
-          deductCapital(t, short);
-          ui.log(`${t.name}: не хватило ${short} на возврат `
-            + `«${db.funding[f.card_id].name}» — списано из Капитала 1:1.`, s);
-        }
-        ui.log(`${t.name}: возвращено тело «${db.funding[f.card_id].name}» = ${need}.`, s);
-      }
-      t.funding = [];
-    }
-
-    const results = [];
-    for (const t of s.teams) {
-      const points = (t.capital * 2 + Math.floor(t.liquidity / 2)
-        + (t.improvements.length + (t.bank_type !== "base" ? 1 : 0)) * 4);
-      const eliminated = t.capital <= 0;
-      results.push({
-        name: t.name,
-        capital: t.capital,
-        liquidity: t.liquidity,
-        bank: db.bank_types[t.bank_type].name,
-        improvements: t.improvements.length,
-        points,
-        eliminated,
-      });
-    }
-    results.sort((a, b) => (a.eliminated === b.eliminated
-      ? b.points - a.points
-      : (a.eliminated ? 1 : -1)));
-    results.forEach((r, i) => { r.place = i + 1; });
-
-    await ui.finalScreen(results, results[0]);
-
-    s.scored = true;
-    ui.showStatus(s, db);
-    await ui.pause();
+    const results = this.state.teams.map((team) => ({
+      name: team.name, capital: team.capital, liquidity: team.liquidity,
+      bank: this.db.bank_types[team.bank_type].name, improvements: team.improvements.length,
+      points: team.capital * 2 + Math.floor(team.liquidity / 2) + (team.improvements.length + (team.bank_type !== "base" ? 1 : 0)) * 4,
+      eliminated: team.capital <= 0,
+    }));
+    results.sort((a, b) => (a.eliminated === b.eliminated ? b.points - a.points : a.eliminated ? 1 : -1));
+    results.forEach((result, index) => { result.place = index + 1; });
+    await this.ui.finalScreen(results, results[0]);
+    this.state.scored = true;
+    await this.board.pause();
     return { results, winner: results[0].name };
   }
 }

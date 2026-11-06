@@ -10,7 +10,7 @@
   <div id="start" class="overlay">
     <div class="panel start-panel">
       <h1>БАНКОВСКАЯ ИГРА</h1>
-      <p class="subtitle">Один общий экран за столом: команды по очереди подходят к ноутбуку.</p>
+      <p class="subtitle">Настольная стратегия для общего экрана. Все данные сохраняются только в этом браузере.</p>
 
       <div class="setup-row">
         <label for="team-count">Команд за столом</label>
@@ -55,11 +55,15 @@
   </header>
 
   <div id="tab-game" class="tab-pane hidden">
-    <main id="main">
-      <section id="ctx"></section>
-      <div id="turn-banner" class="hidden"></div>
-      <section id="control"></section>
-      <div id="waiting" class="hidden">Отправили — ждём ход движка…</div>
+    <main id="main" class="game-layout">
+      <section class="game-stage">
+        <div class="stage-kicker">ТЕКУЩАЯ СИТУАЦИЯ</div>
+        <section id="ctx"></section>
+        <section id="briefing" class="briefing hidden"></section>
+        <div id="turn-banner" class="hidden"></div>
+        <section id="control"></section>
+      </section>
+      <div id="waiting" class="hidden">Сохраняем ответ…</div>
     </main>
   </div>
 

@@ -1,4 +1,4 @@
-/* Банковская игра — общий экран за столом: рендер и управление.
+﻿/* Банковская игра — общий экран за столом: рендер и управление.
  *
  * Автономная версия: без сервера и без клавиатуры — только мышка.
  * Движок (engine.js) создаёт экраны, этот файл их рисует и передаёт
@@ -133,6 +133,16 @@ const NAV_BTN_SELECTORS = [
 let activeTab = "game";
 
 // Показать контент вкладки и обновить состояние кнопок
+function refreshActiveTab() {
+  if (!gameState || activeTab === "game") return;
+  if (activeTab === "teams") renderTeamsPanel();
+  else if (activeTab === "market") renderMarketPanel();
+  else if (activeTab === "deck") renderDeckPanel();
+  else if (activeTab === "logs") renderLogsPanel();
+  else if (activeTab === "cb") renderCbPanel();
+  else if (activeTab === "help") renderHelpPanel();
+}
+
 function showTab(tabName) {
   // Скроем все tab-pane
   const tabPanes = document.querySelectorAll(".tab-pane");
@@ -177,7 +187,7 @@ function showTab(tabName) {
   }
 
   // Активируем кнопку текущей вкладки
-  const activeBtn = $(`#nav-${tabName}-btn`);
+  const activeBtn = tabName === "cb" ? $("#cb-btn") : $(`#nav-${tabName}-btn`);
   if (activeBtn) {
     activeBtn.classList.add("active");
   }
@@ -197,148 +207,11 @@ for (const sel of NAV_BTN_SELECTORS) {
   }
 }
 
-// CB button also toggles the pop-up via existing mechanism
-// (the document click handler below will handle closing)
-
-document.addEventListener("click", (e) => {
-  // Не закрываем при клике на навигационные кнопки
-  if (e.target.closest(".nav-btn")) return;
-  
-  // Закрываем все side-panel если клик был вне них
-  const sidePanels = document.querySelectorAll(".side-panel:not(.hidden)");
-  sidePanels.forEach(panel => {
-    if (!panel.contains(e.target) && !panel.parentNode.contains(e.target)) {
-      panel.classList.add("hidden");
-    }
-  });
-  
-  // Закрываем CB panel если клик был вне него
-  const cbPanel = document.querySelector("#tab-cb:not(.hidden)");
-  if (cbPanel && !cbPanel.contains(e.target)) {
-    cbPanel.classList.add("hidden");
-  }
-});
-
 // ---------- панели осмотра ----------
 
 function panelHead(panel, title) {
   return el("div", { class: "panel-head" },
     el("span", { class: "panel-title", text: title }));
-}
-
-function togglePanel(sel) {
-  const p = PANELS.find((x) => x.panel === sel);
-  if (!p) return;
-  const box = $(sel);
-  const willOpen = box.classList.contains("hidden");
-  for (const x of PANELS) $(x.panel).classList.add("hidden");
-  if (willOpen) {
-    p.render();
-    box.classList.remove("hidden");
-    box.scrollTop = 0;
-  }
-}
-
-// Rendera functions now render into their respective tab-pane divs
-function renderTeamsPanel() {
-  const box = $("#tab-teams");
-  box.replaceChildren(panelHead("#tab-teams", "Команды за столом"));
-  if (!gameState) return;
-  const turnName = currentScreen && currentScreen.ctx && currentScreen.ctx.table
-    ? currentScreen.ctx.table.name : null;
-  for (const t of gameState.teams) {
-    box.append(renderTable(null, teamTableView(t, gameState, db), t.name === turnName));
-    const used = (t.bid_used || []).length;
-    box.append(el("div", { class: "hand-line",
-      text: `Карточек скидки у «${t.name}»: ${t.bid_hand.length}`
-        + (used ? ` (${used} сгорело, вернутся в след. раунде)` : "") }));
-  }
-}
-
-function renderMarketPanel() {
-  const box = $("#tab-market");
-  box.replaceChildren(panelHead("#tab-market", "Рынок: торги и сделки у ЦБ"));
-  if (!gameState) return;
-  renderMarket(box, marketView(gameState, db));
-}
-
-function renderDeckPanel() {
-  const box = $("#tab-deck");
-  box.replaceChildren(panelHead("#tab-deck", "Колода: что осталось"));
-  if (!gameState) return;
-  deckList(box, "В колоде (ещё не выпали)", gameState.deck);
-  deckList(box, "В сбросе", gameState.discard);
-  deckList(box, "На торгах (лоты)", gameState.market_lots);
-  const freeIds = [];
-  for (const [id, n] of Object.entries(gameState.free_pool)) {
-    for (let i = 0; i < n; i++) freeIds.push(id);
-  }
-  deckList(box, "Бесплатный пул у ЦБ", freeIds);
-  box.append(el("div", { class: "muted deck-note",
-    text: "Когда колода пустеет, сброс перемешивается и возвращается в игру." }));
-}
-
-function renderLogsPanel() {
-  const box = $("#tab-logs");
-  box.replaceChildren(panelHead("#tab-logs", "События партии"));
-  const lines = gameState && gameState.log.length ? gameState.log : logLines;
-  if (!lines.length) {
-    box.append(el("div", { class: "muted", text: "Событий пока нет." }));
-    return;
-  }
-  for (const line of lines.slice(-60)) {
-    box.append(el("div", { class: "log-line", text: line }));
-  }
-  box.scrollTop = box.scrollHeight;
-}
-
-function renderCbPanel() {
-  const box = $("#tab-cb");
-  box.replaceChildren(panelHead("#tab-cb", "Решения ЦБ по раундам"));
-  if (!cbHistory.length) {
-    box.append(el("div", { class: "muted", text: "Партия ещё не начиналась." }));
-    return;
-  }
-  for (const d of cbHistory) {
-    box.append(el("div", { class: "cb-item" + (d.round === cbRound ? " now" : "") },
-      el("div", { class: "cb-item-title", text: `Раунд ${d.round}: «${d.title}»` }),
-      el("div", { class: "cb-item-text", text: d.text }),
-    ));
-  }
-}
-
-function renderHelpPanel() {
-  const box = $("#tab-help");
-  box.replaceChildren(panelHead("#tab-help", "Справка: как играть"));
-  const steps = [
-    ["ШАГ 1", "Решение ЦБ нового раунда и выкладка сделок на рынок."],
-    ["ШАГ 2", "Каждая команда по очереди: взять долг у ЦБ, купить улучшение "
-      + "или специализацию, вернуть долг, завершить ход."],
-    ["ШАГ 3", "Торги: команды тайно ставят карточку скидки, побеждает большая "
-      + "скидка. Затем каждая команда может взять бесплатную сделку у ЦБ."],
-    ["ШАГ 4", "Расчёты: платежи по долгам и доходы по сделкам, проверка "
-      + "сделок с истёкшим срокам кубиком, сдвиг конвейера, обмен прибыли "
-      + "на Капитал."],
-    ["ШАГ 5", "(только в 5-м раунде) вскрытие стресс-сценариев и "
-      + "межбанковская торговля сделками."],
-  ];
-  const box2 = el("div", { class: "help-body" });
-  for (const [k, v] of steps) {
-    box2.append(el("div", { class: "help-step" },
-      el("b", { text: k }), el("span", { text: " — " + v })));
-  }
-  box2.append(el("div", { class: "help-step" },
-    el("b", { text: "Норматив" }),
-    el("span", { text: " — Риск сделок не должен превышать Капитала." })));
-  box2.append(el("div", { class: "help-step" },
-    el("b", { text: "Очки в финале" }),
-    el("span", { text: " — Капитал × 2 + Баланс ÷ 2 + (улучшения и "
-      + "специализация) × 4." })));
-  box2.append(el("div", { class: "help-step" },
-    el("b", { text: "Управление" }),
-    el("span", { text: " — только мышкой: кнопки под экраном, панели сверху. "
-      + "Панель закрывается крестиком или кликом в любом месте экрана." })));
-  box.append(box2);
 }
 
 // ---------- панели: контент ----------
@@ -441,15 +314,13 @@ function renderHelpPanel() {
   const box = $("#tab-help");
   box.replaceChildren(panelHead("#tab-help", "Справка: как играть"));
   const steps = [
-    ["ШАГ 1", "Решение ЦБ нового раунда и выкладка сделок на рынок."],
-    ["ШАГ 2", "Каждая команда по очереди: взять долг у ЦБ, купить улучшение "
-      + "или специализацию, вернуть долг, завершить ход."],
-    ["ШАГ 3", "Торги: команды тайно ставят карточку скидки, побеждает большая "
-      + "скидка. Затем каждая команда может взять бесплатную сделку у ЦБ."],
-    ["ШАГ 4", "Расчёты: платежи по долгам и доходы по сделкам, проверка "
-      + "сделок с истёкшим срокам кубиком, сдвиг конвейера, обмен прибыли "
-      + "на Капитал."],
-    ["ШАГ 5", "(только в 5-м раунде) вскрытие стресс-сценариев и "
+    ["ШАГ 1", "Финансирование: команда берёт или возвращает долг, покупает улучшение "
+      + "или специализацию и завершает ход."],
+    ["ШАГ 2", "Торги: команды тайно ставят карточку скидки, побеждает большая скидка."],
+    ["ШАГ 3", "Сделки у ЦБ без торгов: каждая команда может взять сделку напрямую у ЦБ."],
+    ["ШАГ 4", "Расчёты: платежи по долгам и доходы по сделкам, проверки кубиком, "
+      + "сдвиг сделок и обмен прибыли на Капитал."],
+    ["ШАГ 5", "(после 5-го раунда) вскрытие стресс-сценариев и "
       + "межбанковская торговля сделками."],
   ];
   const box2 = el("div", { class: "help-body" });
@@ -466,8 +337,7 @@ function renderHelpPanel() {
       + "специализация) × 4." })));
   box2.append(el("div", { class: "help-step" },
     el("b", { text: "Управление" }),
-    el("span", { text: " — только мышкой: кнопки под экраном, панели сверху. "
-      + "Панель закрывается крестиком или кликом в любом месте экрана." })));
+    el("span", { text: " — выберите действие в нижней панели. Дополнительные разделы открываются через навигацию сверху." })));
   box.append(box2);
 }
 
@@ -504,12 +374,15 @@ function renderHistory() {
 
 function renderScreen(screen) {
   currentScreen = screen;
-  renderTopbar(screen.ctx && screen.ctx.header);
-  renderCtx(screen.ctx || {});
-  // баннер очереди — первым ребёнком панели управления (она sticky снизу)
-  const table = screen.ctx && screen.ctx.table;
+  const ctx = screen.ctx || {};
+  renderTopbar(ctx.header);
+  const auction = ctx.header && /ставк|торг/i.test(ctx.header.step || "");
+  renderCtx(ctx, auction ? ctx.notes || [] : [], auction);
+  renderBriefing(auction ? [] : ctx.notes || [], ctx.header);
+  // Очередь — часть панели действия, а не отдельное случайное сообщение.
+  const table = ctx.table;
   if (table) {
-    turnBanner.textContent = `Сейчас ходит: ${table.name}`;
+    turnBanner.textContent = `Ход команды: ${table.name}`;
     turnBanner.classList.remove("hidden");
   } else {
     turnBanner.classList.add("hidden");
@@ -532,6 +405,7 @@ function renderScreen(screen) {
     logLines.push(...logs);
     if (logLines.length > 80) logLines = logLines.slice(-80);
   }
+  refreshActiveTab();
 }
 
 function renderLogs() {
@@ -563,13 +437,13 @@ function renderTopbar(h) {
   round.replaceChildren(`Раунд `, dots(h.rounds, h.round),
                         ` ${h.round}/${h.rounds}`);
   const cb = $("#tb-cb");
-  cb.textContent = `Решение ЦБ: «${h.cb_title}» ▾`;
+  cb.textContent = `Решение ЦБ: «${h.cb_title}»`;
   cb.title = h.cb_text || "";
   if (h.cb_history && h.cb_history.length) {
     cbHistory = h.cb_history;
     cbRound = h.round;
   }
-  // «ШАГ 2/4 — ...» -> кружки шага + текст
+  // «ШАГ 2/5 — ...» -> кружки шага + текст
   const m = /ШАГ (\d+)\/(\d+)(.*)/.exec(h.step || "");
   const step = $("#tb-step");
   step.replaceChildren();
@@ -582,18 +456,75 @@ function renderTopbar(h) {
   bar.classList.toggle("stress", !!(h.stress && h.stress.length));
 }
 
-function renderCtx(ctx) {
+function renderCtx(ctx, auctionNotes = [], auction = false) {
   const box = $("#ctx");
   box.replaceChildren();
-
-  // очередь: карточка команды → статусы → рынок
-  if (ctx.table) renderTable(box, ctx.table);
-  if (ctx.notes && ctx.notes.length) {
-    const p = el("div", { class: "notes" });
-    for (const n of ctx.notes) p.append(el("div", { class: "note", text: n }));
-    box.append(p);
+  if (ctx.header) {
+    const raw = ctx.header.step || "Игровой экран";
+    // на экране завершённого раунда «ШАГ …» в заголовке не показываем
+    const titleText = /завершен/.test(raw) ? raw.replace(/^ШАГ \d+\/\d+ — /, "") : raw;
+    box.append(el("div", { class: "phase-title", text: titleText }));
   }
-  if (ctx.market) renderMarket(box, ctx.market);
+  if (ctx.table) {
+    box.append(el("div", { class: "current-team-label", text: "Команда в действии" }));
+    renderTable(box, ctx.table);
+  }
+  if (ctx.market && !auction) {
+    box.append(el("div", { class: "content-section-title", text: "Материалы раунда" }));
+    renderMarket(box, ctx.market);
+  }
+  if (ctx.auction_card) {
+    const card = el("section", { class: "auction-context" });
+    card.append(el("div", { class: "auction-context-title", text: "Карточка в торгах" }));
+    card.append(dealCard(ctx.auction_card, "auction-card"));
+    if (ctx.auction_card.extra) {
+      card.append(el("p", { class: "auction-context-line", text: ctx.auction_card.extra }));
+    }
+    if (ctx.auction_card.bids && ctx.auction_card.bids.length) {
+      const bids = el("div", { class: "auction-bids" });
+      for (const bid of ctx.auction_card.bids) {
+        bids.append(el("div", { class: "auction-bid" },
+          el("div", { class: "auction-bid-name", text: bid.name }),
+          el("div", { class: "auction-bid-value", text: bid.status }),
+        ));
+      }
+      card.append(bids);
+    }
+    // статусные заметки торгов (итоги вскрытия, победитель) — внутри карточки
+    for (const note of auctionNotes) {
+      card.append(el("div", { class: "auction-context-line", text: note }));
+    }
+    box.append(card);
+  } else if (auctionNotes.length) {
+    const card = el("section", { class: "auction-context" });
+    card.append(el("div", { class: "auction-context-title", text: "Карточка в торгах" }));
+    for (const note of auctionNotes) {
+      card.append(el("p", { class: "auction-context-line", text: note }));
+    }
+    box.append(card);
+  }
+  if (ctx.status && !ctx.table && !auction) renderStatus(box, ctx.status);
+}
+
+function renderBriefing(notes, header) {
+  const box = $("#briefing");
+  if (!box) return;
+  box.replaceChildren();
+  if (!notes.length) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  const details = el("details", { class: "briefing-details" });
+  const isAuction = header && /ставк|торг/i.test(header.step || "");
+  details.open = isAuction;
+  details.append(el("summary", { class: "briefing-title", text: isAuction ? "Карточка и условия торга" : "Показать пояснения" }));
+  const content = el("div", { class: "briefing-content" });
+  for (const note of notes) {
+    content.append(el("div", { class: "briefing-line", text: note }));
+  }
+  details.append(content);
+  box.append(details);
 }
 
 function dealCard(d, extraClass = "") {
@@ -682,7 +613,7 @@ function renderStatus(box, rows) {
   rows.forEach((r, i) => {
     // клик по карточке — открыть полный стол этой команды
     wrap.append(el("div", { class: `status-card${r.risk_ok ? "" : " bad"}`,
-      onclick: () => togglePanel("#teams-panel") },
+      onclick: () => showTab("teams") },
       el("div", { class: "sc-name", text: r.name }),
       el("div", { class: "sc-line", text: `Капитал ${r.capital} | Баланс ${r.liquidity}` }),
       el("div", { class: "sc-line", text: `Риск ${r.risk}${r.risk_ok ? "" : " — больше капитала!"}` }),
@@ -834,3 +765,4 @@ function init() {
 }
 
 init();
+

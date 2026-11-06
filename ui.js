@@ -8,7 +8,7 @@
 
 // липкие части контекста (шапка, стол, рынок, статус) переживают экран;
 // notes/logs — одноразовые.
-const STICKY_KEYS = ["header", "table", "market"];
+const STICKY_KEYS = ["header", "table", "market", "status", "auction_card"];
 
 function dealCardView(c, proReq) {
   const net = c.kind === "A" ? c.income * c.term : c.payoff;
@@ -32,7 +32,7 @@ function teamTableView(team, state, db) {
   const bank = db.bank_types[team.bank_type];
   const funding = team.funding.map((f) => {
     const c = db.funding[f.card_id];
-    const rate = f.card_id === "mbk" ? stateMbkRate(state, db) : null;
+    const rate = f.card_id === "mbk" ? db.mbkRate(state.round_number, state.active_stress, state) : null;
     const per = c.per_round;
     const perTxt = per === "key_rate" ? `${rate} (по ставке ЦБ)` : String(per);
     const term = f.rounds_left === null || f.rounds_left === undefined
@@ -59,7 +59,7 @@ function teamTableView(team, state, db) {
     liquidity: team.liquidity,
     risk,
     risk_limit: riskLimit(team, db),
-    risk_ok: risk <= team.capital,
+    risk_ok: risk <= riskLimit(team, db),
     bank: bank.name,
     deals_limit: conveyorLimit(team, db),
     monthly_cost: bank.monthly_cost,
@@ -78,7 +78,7 @@ function statusRowView(t, state, db) {
     risk,
     deals: t.deals.length,
     funding: t.funding.length,
-    risk_ok: risk <= t.capital,
+    risk_ok: risk <= riskLimit(t, db),
   };
 }
 
@@ -152,10 +152,10 @@ class WebUI {
 
   header(state, db, extra = "") {
     const rnd = Math.min(state.round_number, db.rounds);
-    const dec = db.cbDecision(rnd);
+    const dec = db.cbDecision(rnd, state);
     const history = [];
     for (let r = 1; r <= rnd; r++) {
-      const d = db.cbDecision(r);
+      const d = db.cbDecision(r, state);
       history.push({ round: r, title: d.title, text: d.text || "" });
     }
     const h = {
@@ -182,6 +182,20 @@ class WebUI {
 
   showStatus(state, db) {
     this.ctx.status = state.teams.map((t) => statusRowView(t, state, db));
+  }
+
+  showAuctionCard(card, db, extra = "", bids = null) {
+    this.ctx.auction_card = {
+      ...dealCardView(card, proRequirement(card, db)),
+      price: card.body,
+      summary: kindStr(card),
+      extra,
+      bids: bids ? bids.map((item) => ({
+        name: item.team.name,
+        bid: item.bid,
+        status: item.bid === null ? (item.reason || "пас") : `ставка ${item.bid}`,
+      })) : [],
+    };
   }
 
   // ---------- ввод ----------

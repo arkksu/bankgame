@@ -36,5 +36,5 @@ const START_CONFIG = {
   // Лимит обмена прибыли на капитал за один раунд на команду
   // (в парах обмена, т.к. курс capital_exchange_rate баланса → 1 капитал).
   // null — без ограничения.
-  capital_exchange_max_per_round: null,
+  capital_exchange_max_per_round: 3,
 };
