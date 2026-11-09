@@ -275,6 +275,9 @@ class Board {
   get db() { return this.game.db; }
 
   title(step, text) {
+    // ШАГ 0 — условный шаг: витрина рынка перед началом раунда.
+    // Его номер нигде не показывается — только текст заголовка.
+    if (step === 0) return text;
     // ШАГ 5 существует только в партии, где после 5-го раунда идёт стресс-тест
     const total = this.state.round_number === 5 ? 5 : 4;
     return `ШАГ ${step}/${total} — ${text}`;
@@ -404,7 +407,7 @@ class Game {
     const s = this.state;
     if (this.save) this.save(s);
     const decision = this.db.cbDecision(s.round_number, s);
-    this.board.desk(1, "Открытие раунда · решение ЦБ и рынок");
+    this.board.desk(0, "Открытие раунда · решение ЦБ и рынок");
     this.ui.note(decision.text);
     if (s.round_number === 2) {
       this.mixPro();
@@ -418,6 +421,8 @@ class Game {
     }
     this.ui.showMarket(s, this.db);
     this.ui.showStatus(s, this.db);
+    // Условный шаг 0: показать рынок и дождаться «Начать раунд».
+    await this.board.pause("Начать раунд");
     this.ui.note("Шаг 1 — финансирование. После завершения ходов начнутся торги на шаге 2.");
     s.phase = "funding";
     s.turn_team = 0;
